@@ -1,0 +1,5 @@
+ALTER TABLE "ClientAccount"
+ALTER COLUMN "email" DROP NOT NULL;
+
+ALTER TABLE "Staff"
+ALTER COLUMN "email" DROP NOT NULL;

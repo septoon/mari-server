@@ -1,0 +1,426 @@
+import { DiscountType } from '@prisma/client';
+import { Router } from 'express';
+import { z } from 'zod';
+
+import { prisma } from '../../db/prisma';
+import { authenticateRequired, requirePermission, requireStaff, requireStaffRoles } from '../../middlewares/auth';
+import { validateBody, validateParams, validateQuery } from '../../middlewares/validate';
+import { asyncHandler } from '../../utils/async-handler';
+import { badRequest, notFound } from '../../utils/errors';
+import { D, toNumber } from '../../utils/money';
+import { normalizePhone10, toPhoneE164 } from '../../utils/phone';
+import { ok } from '../../utils/response';
+import { upsertClientByPhone } from './service';
+
+const listClientsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  search: z.string().trim().min(1).optional(),
+  categoryId: z.string().uuid().optional()
+});
+
+const loyaltyListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  search: z.string().trim().min(1).optional(),
+  activeTemporary: z.union([z.literal('true'), z.literal('false')]).optional()
+});
+
+const clientIdParamSchema = z.object({
+  id: z.string().uuid()
+});
+
+const discountPayloadSchema = z.object({
+  mode: z.enum(['PERMANENT', 'TEMPORARY']),
+  type: z.enum(['NONE', 'FIXED', 'PERCENT']),
+  value: z.coerce.number().nonnegative().optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional()
+});
+
+const upsertLoyaltySchema = z.object({
+  phone: z.string().min(1),
+  name: z.string().trim().min(1).optional(),
+  discount: discountPayloadSchema
+});
+
+const updateDiscountSchema = z.object({
+  discount: discountPayloadSchema
+});
+
+const validateDiscountPayload = (payload: z.infer<typeof discountPayloadSchema>) => {
+  if (payload.type === 'NONE') {
+    return;
+  }
+
+  if (payload.value === undefined) {
+    throw badRequest('Discount value is required when type is FIXED/PERCENT');
+  }
+
+  if (payload.type === 'PERCENT' && payload.value > 100) {
+    throw badRequest('Percent discount must be <= 100');
+  }
+
+  if (payload.mode === 'TEMPORARY') {
+    if (!payload.from || !payload.to) {
+      throw badRequest('Temporary discount requires from and to');
+    }
+
+    const from = new Date(payload.from);
+    const to = new Date(payload.to);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || to <= from) {
+      throw badRequest('Temporary discount interval is invalid');
+    }
+  }
+};
+
+const applyDiscountToClient = async (clientId: string, payload: z.infer<typeof discountPayloadSchema>) => {
+  validateDiscountPayload(payload);
+
+  const discountType = payload.type as DiscountType;
+  const discountValue = payload.type === 'NONE' ? null : D(payload.value ?? 0);
+
+  if (payload.mode === 'PERMANENT') {
+    return prisma.client.update({
+      where: { id: clientId },
+      data: {
+        discountType,
+        discountValue,
+        // clear temporary window when explicitly assigning permanent NONE
+        ...(payload.type === 'NONE'
+          ? {
+              temporaryDiscountType: DiscountType.NONE,
+              temporaryDiscountValue: null,
+              temporaryDiscountFrom: null,
+              temporaryDiscountTo: null
+            }
+          : {})
+      },
+      include: { category: true }
+    });
+  }
+
+  return prisma.client.update({
+    where: { id: clientId },
+    data: {
+      temporaryDiscountType: discountType,
+      temporaryDiscountValue: discountValue,
+      temporaryDiscountFrom: payload.type === 'NONE' ? null : new Date(payload.from!),
+      temporaryDiscountTo: payload.type === 'NONE' ? null : new Date(payload.to!)
+    },
+    include: { category: true }
+  });
+};
+
+const mapClientForAdmin = (client: {
+  id: string;
+  name: string | null;
+  phoneE164: string;
+  phone10: string;
+  email?: string | null;
+  discountType: DiscountType;
+  discountValue: any;
+  temporaryDiscountType: DiscountType;
+  temporaryDiscountValue: any;
+  temporaryDiscountFrom: Date | null;
+  temporaryDiscountTo: Date | null;
+  category?: { id: string; name: string } | null;
+}) => ({
+  id: client.id,
+  name: client.name,
+  phoneE164: client.phoneE164,
+  phone10: client.phone10,
+  email: client.email ?? null,
+  category: client.category ? { id: client.category.id, name: client.category.name } : null,
+  discount: {
+    permanent: {
+      type: client.discountType,
+      value: client.discountValue ? toNumber(client.discountValue) : null
+    },
+    temporary: {
+      type: client.temporaryDiscountType,
+      value: client.temporaryDiscountValue ? toNumber(client.temporaryDiscountValue) : null,
+      from: client.temporaryDiscountFrom ? client.temporaryDiscountFrom.toISOString() : null,
+      to: client.temporaryDiscountTo ? client.temporaryDiscountTo.toISOString() : null
+    }
+  }
+});
+
+export const clientsRouter = Router();
+
+clientsRouter.get(
+  '/',
+  authenticateRequired,
+  requireStaff,
+  requireStaffRoles('ADMIN', 'OWNER'),
+  validateQuery(listClientsQuerySchema),
+  asyncHandler(async (req, res) => {
+    const query = req.validatedQuery as z.infer<typeof listClientsQuerySchema>;
+    const page = query.page;
+    const limit = query.limit;
+    const skip = (page - 1) * limit;
+
+    const where = {
+      ...(query.categoryId ? { categoryId: query.categoryId } : {}),
+      ...(query.search
+        ? {
+            OR: [
+              { name: { contains: query.search, mode: 'insensitive' as const } },
+              { phoneE164: { contains: query.search } },
+              { phone10: { contains: query.search.replace(/\D/g, '') } }
+            ]
+          }
+        : {})
+    };
+
+    const [total, rows] = await Promise.all([
+      prisma.client.count({ where }),
+      prisma.client.findMany({
+        where,
+        include: {
+          category: true,
+          account: {
+            select: { email: true }
+          }
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit
+      })
+    ]);
+
+    return ok(
+      res,
+      {
+        items: rows.map((row) =>
+          mapClientForAdmin({
+            id: row.id,
+            name: row.name,
+            phone10: row.phone10,
+            phoneE164: row.phoneE164,
+            email: row.account?.email ?? null,
+            category: row.category,
+            discountType: row.discountType,
+            discountValue: row.discountValue,
+            temporaryDiscountType: row.temporaryDiscountType,
+            temporaryDiscountValue: row.temporaryDiscountValue,
+            temporaryDiscountFrom: row.temporaryDiscountFrom,
+            temporaryDiscountTo: row.temporaryDiscountTo
+          })
+        )
+      },
+      200,
+      {
+        page,
+        limit,
+        total,
+        pages: Math.max(1, Math.ceil(total / limit))
+      }
+    );
+  })
+);
+
+clientsRouter.get(
+  '/:id',
+  authenticateRequired,
+  requireStaff,
+  requireStaffRoles('ADMIN', 'OWNER'),
+  validateParams(clientIdParamSchema),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params as z.infer<typeof clientIdParamSchema>;
+
+    const row = await prisma.client.findUnique({
+      where: { id },
+      include: {
+        category: true,
+        account: {
+          select: { email: true }
+        }
+      }
+    });
+    if (!row) {
+      throw notFound('Client not found');
+    }
+
+    return ok(
+      res,
+      mapClientForAdmin({
+        id: row.id,
+        name: row.name,
+        phone10: row.phone10,
+        phoneE164: row.phoneE164,
+        email: row.account?.email ?? null,
+        category: row.category,
+        discountType: row.discountType,
+        discountValue: row.discountValue,
+        temporaryDiscountType: row.temporaryDiscountType,
+        temporaryDiscountValue: row.temporaryDiscountValue,
+        temporaryDiscountFrom: row.temporaryDiscountFrom,
+        temporaryDiscountTo: row.temporaryDiscountTo
+      })
+    );
+  })
+);
+
+clientsRouter.patch(
+  '/:id/discount',
+  authenticateRequired,
+  requireStaff,
+  requirePermission('MANAGE_CLIENT_DISCOUNTS'),
+  validateParams(clientIdParamSchema),
+  validateBody(updateDiscountSchema),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params as z.infer<typeof clientIdParamSchema>;
+    const body = req.body as z.infer<typeof updateDiscountSchema>;
+
+    const existing = await prisma.client.findUnique({ where: { id } });
+    if (!existing) {
+      throw notFound('Client not found');
+    }
+
+    const updated = await applyDiscountToClient(id, body.discount);
+
+    return ok(res, {
+      client: mapClientForAdmin({
+        id: updated.id,
+        name: updated.name,
+        phone10: updated.phone10,
+        phoneE164: updated.phoneE164,
+        category: updated.category,
+        discountType: updated.discountType,
+        discountValue: updated.discountValue,
+        temporaryDiscountType: updated.temporaryDiscountType,
+        temporaryDiscountValue: updated.temporaryDiscountValue,
+        temporaryDiscountFrom: updated.temporaryDiscountFrom,
+        temporaryDiscountTo: updated.temporaryDiscountTo
+      })
+    });
+  })
+);
+
+clientsRouter.get(
+  '/loyalty/list',
+  authenticateRequired,
+  requireStaff,
+  requirePermission('MANAGE_CLIENT_DISCOUNTS'),
+  validateQuery(loyaltyListQuerySchema),
+  asyncHandler(async (req, res) => {
+    const query = req.validatedQuery as z.infer<typeof loyaltyListQuerySchema>;
+    const page = query.page;
+    const limit = query.limit;
+    const skip = (page - 1) * limit;
+
+    const now = new Date();
+
+    const where = {
+      ...(query.search
+        ? {
+            OR: [
+              { name: { contains: query.search, mode: 'insensitive' as const } },
+              { phoneE164: { contains: query.search } },
+              { phone10: { contains: query.search.replace(/\D/g, '') } }
+            ]
+          }
+        : {}),
+      ...(query.activeTemporary === 'true'
+        ? {
+            temporaryDiscountType: { not: DiscountType.NONE },
+            temporaryDiscountFrom: { lte: now },
+            temporaryDiscountTo: { gte: now }
+          }
+        : {})
+    };
+
+    const [total, rows] = await Promise.all([
+      prisma.client.count({ where }),
+      prisma.client.findMany({
+        where,
+        include: {
+          category: true,
+          account: {
+            select: { email: true }
+          }
+        },
+        orderBy: { updatedAt: 'desc' },
+        skip,
+        take: limit
+      })
+    ]);
+
+    return ok(
+      res,
+      {
+        items: rows.map((row) =>
+          mapClientForAdmin({
+            id: row.id,
+            name: row.name,
+            phone10: row.phone10,
+            phoneE164: row.phoneE164,
+            email: row.account?.email ?? null,
+            category: row.category,
+            discountType: row.discountType,
+            discountValue: row.discountValue,
+            temporaryDiscountType: row.temporaryDiscountType,
+            temporaryDiscountValue: row.temporaryDiscountValue,
+            temporaryDiscountFrom: row.temporaryDiscountFrom,
+            temporaryDiscountTo: row.temporaryDiscountTo
+          })
+        )
+      },
+      200,
+      {
+        page,
+        limit,
+        total,
+        pages: Math.max(1, Math.ceil(total / limit))
+      }
+    );
+  })
+);
+
+clientsRouter.post(
+  '/loyalty/upsert',
+  authenticateRequired,
+  requireStaff,
+  requirePermission('MANAGE_CLIENT_DISCOUNTS'),
+  validateBody(upsertLoyaltySchema),
+  asyncHandler(async (req, res) => {
+    const body = req.body as z.infer<typeof upsertLoyaltySchema>;
+
+    const client = await upsertClientByPhone(body.phone, body.name);
+    const updated = await applyDiscountToClient(client.id, body.discount);
+
+    return ok(
+      res,
+      {
+        client: mapClientForAdmin({
+          id: updated.id,
+          name: updated.name,
+          phone10: updated.phone10,
+          phoneE164: updated.phoneE164,
+          category: updated.category,
+          discountType: updated.discountType,
+          discountValue: updated.discountValue,
+          temporaryDiscountType: updated.temporaryDiscountType,
+          temporaryDiscountValue: updated.temporaryDiscountValue,
+          temporaryDiscountFrom: updated.temporaryDiscountFrom,
+          temporaryDiscountTo: updated.temporaryDiscountTo
+        })
+      },
+      201
+    );
+  })
+);
+
+clientsRouter.post(
+  '/phone/normalize',
+  authenticateRequired,
+  requireStaff,
+  requireStaffRoles('ADMIN', 'OWNER'),
+  validateBody(z.object({ phone: z.string().min(1) })),
+  asyncHandler(async (req, res) => {
+    const body = req.body as { phone: string };
+    const phone10 = normalizePhone10(body.phone);
+    return ok(res, { phone10, phoneE164: toPhoneE164(phone10) });
+  })
+);
