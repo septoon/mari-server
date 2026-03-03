@@ -13,7 +13,10 @@ const PERMISSIONS: Array<{ code: string; description: string }> = [
   { code: 'VIEW_FINANCIAL_STATS', description: 'View financial statistics' },
   { code: 'MANAGE_PERMISSIONS', description: 'Grant and revoke custom permissions' },
   { code: 'MANAGE_CLIENT_DISCOUNTS', description: 'Manage permanent and temporary client discounts' },
-  { code: 'MANAGE_PROMOCODES', description: 'Create, update and deactivate promo codes' }
+  { code: 'MANAGE_PROMOCODES', description: 'Create, update and deactivate promo codes' },
+  { code: 'MANAGE_CLIENT_FRONT', description: 'Manage client-facing content and settings' },
+  { code: 'MANAGE_MEDIA', description: 'Upload and manage client-facing media assets' },
+  { code: 'PUBLISH_CLIENT_FRONT', description: 'Publish draft client content to production' }
 ];
 
 const normalizePhone10 = (raw: string): string => {

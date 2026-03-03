@@ -5,6 +5,7 @@ import { errorHandler, notFoundHandler } from './middlewares/error-handler';
 import { authRouter } from './modules/auth/routes';
 import { appointmentsRouter } from './modules/appointments/routes';
 import { clientsRouter } from './modules/clients/routes';
+import { clientFrontRouter } from './modules/client-front/routes';
 import { exportsRouter } from './modules/exports/routes';
 import { importsRouter } from './modules/imports/routes';
 import { promoCodesRouter } from './modules/promocodes/routes';
@@ -24,7 +25,20 @@ app.get('/health', (_req, res) => {
   return ok(res, { status: 'ok', time: new Date().toISOString() });
 });
 
+app.use(
+  env.MEDIA_PUBLIC_BASE,
+  express.static(env.MEDIA_ROOT, {
+    fallthrough: true,
+    immutable: true,
+    maxAge: '365d',
+    setHeaders: (res) => {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    }
+  })
+);
+
 app.use('/auth', authRouter);
+app.use('/client-front', clientFrontRouter);
 app.use('/staff', staffRouter);
 app.use('/clients', clientsRouter);
 app.use('/imports', importsRouter);

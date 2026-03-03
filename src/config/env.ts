@@ -23,7 +23,14 @@ const envSchema = z.object({
   OWNER_EMAIL: z.string().email().optional(),
   OWNER_NAME: z.string().optional(),
   OWNER_PIN: z.string().min(4).max(16).optional(),
-  OWNER_PHONE: z.string().min(1)
+  OWNER_PHONE: z.string().min(1),
+  MEDIA_ROOT: z.string().default('/var/lib/beauty-crm/media'),
+  MEDIA_PUBLIC_BASE: z.string().default('/media'),
+  MEDIA_PUBLIC_ORIGIN: z.string().url().optional(),
+  MEDIA_MAX_UPLOAD_MB: z.coerce.number().int().positive().max(200).default(15),
+  MEDIA_MAX_DIMENSION: z.coerce.number().int().positive().max(12000).default(6000),
+  MEDIA_WEBP_QUALITY: z.coerce.number().int().min(1).max(100).default(82),
+  MEDIA_VARIANT_WIDTHS: z.string().default('360,720,1280')
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -32,8 +39,26 @@ if (!parsed.success) {
   process.exit(1);
 }
 
+const normalizeMediaPublicBase = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return '/media';
+  const withPrefix = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  return withPrefix.replace(/\/+$/, '');
+};
+
+const mediaVariantWidths = [...new Set(parsed.data.MEDIA_VARIANT_WIDTHS.split(',').map((item) => Number(item.trim())))]
+  .filter((value) => Number.isInteger(value) && value > 0)
+  .sort((a, b) => a - b);
+
+if (mediaVariantWidths.length === 0) {
+  console.error('Environment validation failed', { MEDIA_VARIANT_WIDTHS: 'No valid widths configured' });
+  process.exit(1);
+}
+
 export const env = {
   ...parsed.data,
   DEV_SHOW_LINKS: parsed.data.DEV_SHOW_LINKS === 'true',
-  SMTP_SECURE: parsed.data.SMTP_SECURE === 'true'
+  SMTP_SECURE: parsed.data.SMTP_SECURE === 'true',
+  MEDIA_PUBLIC_BASE: normalizeMediaPublicBase(parsed.data.MEDIA_PUBLIC_BASE),
+  MEDIA_VARIANT_WIDTHS: mediaVariantWidths
 };

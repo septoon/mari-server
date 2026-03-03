@@ -52,6 +52,18 @@ enum ActorType {
   SYSTEM
 }
 
+enum ClientContentStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum ClientPlatform {
+  ALL
+  IOS
+  ANDROID
+  WEB
+}
+
 model ClientCategory {
   id        String   @id @default(uuid())
   name      String   @unique
@@ -61,27 +73,27 @@ model ClientCategory {
 }
 
 model Client {
-  id            String       @id @default(uuid())
-  externalId    String?
-  phone10       String       @unique
-  phoneE164     String
-  name          String?
-  gender        Gender       @default(UNKNOWN)
-  birthday      DateTime?
-  comment       String?
-  categoryId    String?
-  discountType            DiscountType @default(NONE)
-  discountValue           Decimal?     @db.Decimal(12, 2)
-  temporaryDiscountType   DiscountType @default(NONE)
-  temporaryDiscountValue  Decimal?     @db.Decimal(12, 2)
-  temporaryDiscountFrom   DateTime?
-  temporaryDiscountTo     DateTime?
-  createdAt               DateTime     @default(now())
-  updatedAt               DateTime     @updatedAt
+  id                     String       @id @default(uuid())
+  externalId             String?
+  phone10                String       @unique
+  phoneE164              String
+  name                   String?
+  gender                 Gender       @default(UNKNOWN)
+  birthday               DateTime?
+  comment                String?
+  categoryId             String?
+  discountType           DiscountType @default(NONE)
+  discountValue          Decimal?     @db.Decimal(12, 2)
+  temporaryDiscountType  DiscountType @default(NONE)
+  temporaryDiscountValue Decimal?     @db.Decimal(12, 2)
+  temporaryDiscountFrom  DateTime?
+  temporaryDiscountTo    DateTime?
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
 
-  category        ClientCategory?       @relation(fields: [categoryId], references: [id])
-  account         ClientAccount?
-  appointments    Appointment[]
+  category         ClientCategory?       @relation(fields: [categoryId], references: [id])
+  account          ClientAccount?
+  appointments     Appointment[]
   promoRedemptions PromoCodeRedemption[]
 
   @@index([categoryId])
@@ -123,18 +135,28 @@ model Staff {
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
-  position           Position?         @relation(fields: [positionId], references: [id])
-  permissions        StaffPermission[] @relation("staff_permissions")
-  grantedPermissions StaffPermission[] @relation("granted_by")
-  staffServices      StaffService[]
-  workingHours       WorkingHours[]
-  timeOff            TimeOff[]
-  blocks             Block[]
-  appointments       Appointment[]
-  paymentsCreated    Payment[]
-  tokens             StaffToken[]
-  importJobs         ImportJob[]
-  promoCodesCreated  PromoCode[]        @relation("promo_created_by")
+  position                    Position?                 @relation(fields: [positionId], references: [id])
+  permissions                 StaffPermission[]         @relation("staff_permissions")
+  grantedPermissions          StaffPermission[]         @relation("granted_by")
+  staffServices               StaffService[]
+  workingHours                WorkingHours[]
+  timeOff                     TimeOff[]
+  blocks                      Block[]
+  appointments                Appointment[]
+  paymentsCreated             Payment[]
+  tokens                      StaffToken[]
+  importJobs                  ImportJob[]
+  promoCodesCreated           PromoCode[]               @relation("promo_created_by")
+  clientBlocksCreated         ClientContentBlock[]      @relation("client_block_created_by")
+  clientBlocksUpdated         ClientContentBlock[]      @relation("client_block_updated_by")
+  clientBlocksPublished       ClientContentBlock[]      @relation("client_block_published_by")
+  clientReleasesPublished     ClientContentRelease[]    @relation("client_release_published_by")
+  mediaAssetsUploaded         MediaAsset[]              @relation("media_uploaded_by")
+  mediaUsagesCreated          MediaUsage[]              @relation("media_usage_created_by")
+  auditLogs                   AuditLog[]                @relation("audit_actor_staff")
+  specialistProfile           ClientSpecialistProfile?
+  specialistProfilesUpdated   ClientSpecialistProfile[] @relation("specialist_profile_updated_by")
+  specialistProfilesPublished ClientSpecialistProfile[] @relation("specialist_profile_published_by")
 
   @@index([role])
   @@index([positionId])
@@ -203,6 +225,193 @@ model AppConfig {
   clientCancelMinNoticeMinutes Int      @default(120)
   createdAt                    DateTime @default(now())
   updatedAt                    DateTime @updatedAt
+}
+
+model ClientAppConfig {
+  id                            String    @id @default(uuid())
+  singleton                     String    @unique @default("default")
+  brandNameDraft                String?
+  legalNameDraft                String?
+  minAppVersionIosDraft         String?
+  minAppVersionAndroidDraft     String?
+  maintenanceModeDraft          Boolean   @default(false)
+  maintenanceMessageDraft       String?
+  featureFlagsDraft             Json      @default("{}")
+  contactsDraft                 Json      @default("[]")
+  extraDraft                    Json      @default("{}")
+  brandNamePublished            String?
+  legalNamePublished            String?
+  minAppVersionIosPublished     String?
+  minAppVersionAndroidPublished String?
+  maintenanceModePublished      Boolean   @default(false)
+  maintenanceMessagePublished   String?
+  featureFlagsPublished         Json      @default("{}")
+  contactsPublished             Json      @default("[]")
+  extraPublished                Json      @default("{}")
+  publishedVersion              Int       @default(0)
+  publishedReleaseId            String?
+  publishedAt                   DateTime?
+  createdAt                     DateTime  @default(now())
+  updatedAt                     DateTime  @updatedAt
+
+  publishedRelease ClientContentRelease? @relation(fields: [publishedReleaseId], references: [id], onDelete: SetNull)
+}
+
+model ClientContentRelease {
+  id                 String   @id @default(uuid())
+  version            Int      @unique
+  etag               String   @unique
+  appConfigSnapshot  Json
+  blocksCount        Int
+  publishedByStaffId String
+  publishedAt        DateTime @default(now())
+
+  publishedByStaff Staff                @relation("client_release_published_by", fields: [publishedByStaffId], references: [id], onDelete: Restrict)
+  blocks           ClientContentBlock[] @relation("release_blocks")
+  appConfigs       ClientAppConfig[]
+
+  @@index([publishedAt])
+}
+
+model ClientContentBlock {
+  id                 String              @id @default(uuid())
+  blockKey           String
+  blockType          String
+  payload            Json
+  sortOrder          Int                 @default(0)
+  status             ClientContentStatus @default(DRAFT)
+  platform           ClientPlatform      @default(ALL)
+  minAppVersion      String?
+  maxAppVersion      String?
+  startAt            DateTime?
+  endAt              DateTime?
+  isEnabled          Boolean             @default(true)
+  releaseId          String?
+  createdByStaffId   String?
+  updatedByStaffId   String?
+  publishedByStaffId String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  release          ClientContentRelease? @relation("release_blocks", fields: [releaseId], references: [id], onDelete: SetNull)
+  createdByStaff   Staff?                @relation("client_block_created_by", fields: [createdByStaffId], references: [id], onDelete: SetNull)
+  updatedByStaff   Staff?                @relation("client_block_updated_by", fields: [updatedByStaffId], references: [id], onDelete: SetNull)
+  publishedByStaff Staff?                @relation("client_block_published_by", fields: [publishedByStaffId], references: [id], onDelete: SetNull)
+
+  @@index([status, sortOrder])
+  @@index([blockType])
+  @@index([platform, minAppVersion, maxAppVersion])
+  @@index([startAt, endAt])
+  @@index([releaseId])
+}
+
+model ClientSpecialistProfile {
+  id                    String   @id @default(uuid())
+  staffId               String   @unique
+  photoAssetIdDraft     String?
+  photoAssetIdPublished String?
+  specialtyDraft        String?
+  specialtyPublished    String?
+  infoDraft             String?
+  infoPublished         String?
+  ctaTextDraft          String   @default("Записаться")
+  ctaTextPublished      String   @default("Записаться")
+  isVisibleDraft        Boolean  @default(true)
+  isVisiblePublished    Boolean  @default(true)
+  sortOrderDraft        Int      @default(0)
+  sortOrderPublished    Int      @default(0)
+  updatedByStaffId      String?
+  publishedByStaffId    String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  staff            Staff       @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  photoDraft       MediaAsset? @relation("specialist_photo_draft", fields: [photoAssetIdDraft], references: [id], onDelete: SetNull)
+  photoPublished   MediaAsset? @relation("specialist_photo_published", fields: [photoAssetIdPublished], references: [id], onDelete: SetNull)
+  updatedByStaff   Staff?      @relation("specialist_profile_updated_by", fields: [updatedByStaffId], references: [id], onDelete: SetNull)
+  publishedByStaff Staff?      @relation("specialist_profile_published_by", fields: [publishedByStaffId], references: [id], onDelete: SetNull)
+
+  @@index([isVisibleDraft, sortOrderDraft])
+  @@index([isVisiblePublished, sortOrderPublished])
+  @@index([updatedByStaffId])
+  @@index([publishedByStaffId])
+}
+
+model MediaAsset {
+  id               String   @id @default(uuid())
+  entity           String
+  originalFileName String
+  originalMime     String
+  originalSize     Int
+  originalWidth    Int
+  originalHeight   Int
+  checksumSha256   String
+  originalPath     String
+  createdByStaffId String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  createdByStaff                   Staff                     @relation("media_uploaded_by", fields: [createdByStaffId], references: [id], onDelete: Restrict)
+  variants                         MediaVariant[]
+  usages                           MediaUsage[]
+  specialistPhotoDraftProfiles     ClientSpecialistProfile[] @relation("specialist_photo_draft")
+  specialistPhotoPublishedProfiles ClientSpecialistProfile[] @relation("specialist_photo_published")
+
+  @@index([entity, createdAt])
+  @@index([checksumSha256])
+  @@index([createdByStaffId])
+}
+
+model MediaVariant {
+  id        String   @id @default(uuid())
+  assetId   String
+  format    String
+  width     Int
+  height    Int
+  path      String
+  urlPath   String
+  size      Int
+  createdAt DateTime @default(now())
+
+  asset MediaAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@unique([assetId, format, width])
+  @@index([assetId])
+}
+
+model MediaUsage {
+  id               String   @id @default(uuid())
+  assetId          String
+  usageType        String
+  entityId         String
+  fieldPath        String   @default("")
+  note             String?
+  createdByStaffId String?
+  createdAt        DateTime @default(now())
+
+  asset          MediaAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  createdByStaff Staff?     @relation("media_usage_created_by", fields: [createdByStaffId], references: [id], onDelete: SetNull)
+
+  @@unique([assetId, usageType, entityId, fieldPath])
+  @@index([usageType, entityId])
+  @@index([assetId])
+  @@index([createdByStaffId])
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  actorStaffId String?
+  action       String
+  entityType   String
+  entityId     String
+  diff         Json?
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  actorStaff Staff? @relation("audit_actor_staff", fields: [actorStaffId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId, createdAt])
+  @@index([actorStaffId, createdAt])
 }
 
 model PromoCode {
