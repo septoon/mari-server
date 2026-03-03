@@ -24,7 +24,7 @@ const envSchema = z.object({
   OWNER_NAME: z.string().optional(),
   OWNER_PIN: z.string().min(4).max(16).optional(),
   OWNER_PHONE: z.string().min(1),
-  MEDIA_ROOT: z.string().default('/var/lib/beauty-crm/media'),
+  MEDIA_ROOT: z.string().default('/var/lib/mari-server/media'),
   MEDIA_PUBLIC_BASE: z.string().default('/media'),
   MEDIA_PUBLIC_ORIGIN: z.string().url().optional(),
   MEDIA_MAX_UPLOAD_MB: z.coerce.number().int().positive().max(200).default(15),
