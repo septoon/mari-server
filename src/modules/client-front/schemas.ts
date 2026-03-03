@@ -174,19 +174,20 @@ export const blockPayloadSchemaByType = {
   CUSTOM: customPayloadSchema
 } as const;
 
-export const blockCommonSchema = z
-  .object({
-    blockKey: z.string().trim().min(1).max(120).regex(/^[a-z0-9._:-]+$/i),
-    blockType: blockTypeSchema,
-    payload: z.record(z.string(), z.unknown()),
-    sortOrder: z.coerce.number().int().min(0).max(100000).default(0),
-    platform: platformSchema.default('all'),
-    minAppVersion: appVersionSchema.optional(),
-    maxAppVersion: appVersionSchema.optional(),
-    startAt: z.string().datetime().optional(),
-    endAt: z.string().datetime().optional(),
-    isEnabled: z.boolean().default(true)
-  })
+export const blockCommonBaseSchema = z.object({
+  blockKey: z.string().trim().min(1).max(120).regex(/^[a-z0-9._:-]+$/i),
+  blockType: blockTypeSchema,
+  payload: z.record(z.string(), z.unknown()),
+  sortOrder: z.coerce.number().int().min(0).max(100000).default(0),
+  platform: platformSchema.default('all'),
+  minAppVersion: appVersionSchema.optional(),
+  maxAppVersion: appVersionSchema.optional(),
+  startAt: z.string().datetime().optional(),
+  endAt: z.string().datetime().optional(),
+  isEnabled: z.boolean().default(true)
+});
+
+export const blockCommonSchema = blockCommonBaseSchema
   .refine((item) => !item.minAppVersion || !item.maxAppVersion || item.minAppVersion <= item.maxAppVersion, {
     message: 'minAppVersion must be <= maxAppVersion',
     path: ['minAppVersion']
@@ -198,15 +199,16 @@ export const blockCommonSchema = z
 
 export const createBlockSchema = blockCommonSchema;
 
-export const updateBlockSchema = blockCommonSchema
+const updateBlockBaseSchema = blockCommonBaseSchema
   .omit({ blockKey: true })
   .partial()
   .extend({
     payload: z.record(z.string(), z.unknown()).optional()
-  })
-  .refine((item) => Object.keys(item).length > 0, {
-    message: 'At least one field is required'
   });
+
+export const updateBlockSchema = updateBlockBaseSchema.refine((item) => Object.keys(item).length > 0, {
+  message: 'At least one field is required'
+});
 
 export const blockIdParamsSchema = z.object({
   id: z.string().uuid()
