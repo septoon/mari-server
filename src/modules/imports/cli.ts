@@ -5,10 +5,11 @@ import { prisma } from '../../db/prisma';
 import {
   importAppointmentsFromBuffer,
   importClientsFromBuffer,
+  importScheduleFromBuffer,
   importServicesFromBuffer
 } from './service';
 
-type Mode = 'clients' | 'services' | 'appointments';
+type Mode = 'clients' | 'services' | 'appointments' | 'schedule';
 
 const mode = process.argv[2] as Mode | undefined;
 const customPath = process.argv[3];
@@ -36,7 +37,8 @@ const resolveInputPath = async (kind: Mode, explicit?: string): Promise<string> 
       'data/appointments-report.xls',
       'data/Отчет_по_записям.xlsx',
       'data/Отчет_по_записям.xls'
-    ]
+    ],
+    schedule: ['data/schedule.pdf']
   };
 
   const found = await pickExistingPath(map[kind].map((p) => path.resolve(p)));
@@ -63,9 +65,9 @@ const resolveUploaderStaffId = async (): Promise<string> => {
 };
 
 const run = async () => {
-  if (!mode || !['clients', 'services', 'appointments'].includes(mode)) {
+  if (!mode || !['clients', 'services', 'appointments', 'schedule'].includes(mode)) {
     throw new Error(
-      'Usage: tsx src/modules/imports/cli.ts <clients|services|appointments> [filePath]'
+      'Usage: tsx src/modules/imports/cli.ts <clients|services|appointments|schedule> [filePath]'
     );
   }
 
@@ -79,8 +81,11 @@ const run = async () => {
   } else if (mode === 'services') {
     const result = await importServicesFromBuffer(buffer, uploaderId);
     console.log(result);
-  } else {
+  } else if (mode === 'appointments') {
     const result = await importAppointmentsFromBuffer(buffer, uploaderId);
+    console.log(result);
+  } else {
+    const result = await importScheduleFromBuffer(buffer, uploaderId);
     console.log(result);
   }
 };

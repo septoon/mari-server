@@ -140,6 +140,7 @@ model Staff {
   grantedPermissions          StaffPermission[]         @relation("granted_by")
   staffServices               StaffService[]
   workingHours                WorkingHours[]
+  dailySchedules              StaffDailySchedule[]
   timeOff                     TimeOff[]
   blocks                      Block[]
   appointments                Appointment[]
@@ -533,6 +534,20 @@ model Block {
 
   @@index([staffId])
   @@index([startAt])
+}
+
+model StaffDailySchedule {
+  id        String   @id @default(uuid())
+  staffId   String
+  date      DateTime
+  intervals Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@unique([staffId, date])
+  @@index([date])
 }
 
 model Appointment {

@@ -11,6 +11,7 @@ import {
   getImportJobDetails,
   importAppointmentsFromBuffer,
   importClientsFromBuffer,
+  importScheduleFromBuffer,
   importServicesFromBuffer
 } from './service';
 
@@ -73,6 +74,25 @@ importsRouter.post(
   asyncHandler(async (req, res) => {
     const buffer = ensureFile(req.file);
     const result = await importAppointmentsFromBuffer(buffer, req.auth!.subjectId);
+    return ok(res, {
+      jobId: result.jobId,
+      created: result.created,
+      updated: result.updated,
+      skipped: result.skipped,
+      errors: result.errors
+    });
+  })
+);
+
+importsRouter.post(
+  '/schedule',
+  authenticateRequired,
+  requireStaff,
+  requireStaffRoles('ADMIN', 'OWNER'),
+  upload.single('file'),
+  asyncHandler(async (req, res) => {
+    const buffer = ensureFile(req.file);
+    const result = await importScheduleFromBuffer(buffer, req.auth!.subjectId);
     return ok(res, {
       jobId: result.jobId,
       created: result.created,

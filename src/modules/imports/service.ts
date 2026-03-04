@@ -8,6 +8,7 @@ import {
   Prisma
 } from '@prisma/client';
 import dayjs from 'dayjs';
+import pdfParse from 'pdf-parse';
 import * as XLSX from 'xlsx';
 
 import { prisma } from '../../db/prisma';
@@ -17,9 +18,9 @@ import { normalizePhone10 } from '../../utils/phone';
 import { upsertClientByPhone } from '../clients/service';
 import { findOrCreateStaffByName } from '../staff/routes';
 import { D, zero } from '../../utils/money';
-import { MSK_TZ } from '../../utils/time';
+import { MSK_TZ, parseDateOnlyToUtc } from '../../utils/time';
 
-type ImportType = 'CLIENTS' | 'SERVICES' | 'APPOINTMENTS';
+type ImportType = 'CLIENTS' | 'SERVICES' | 'APPOINTMENTS' | 'SCHEDULE';
 
 type Counters = {
   created: number;
@@ -34,6 +35,28 @@ type ImportResult = {
   updated: number;
   skipped: number;
   errors: number;
+};
+
+type DailyInterval = {
+  startTime: string;
+  endTime: string;
+};
+
+const hhmmRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+const ruMonthToNumber: Record<string, string> = {
+  января: '01',
+  февраля: '02',
+  марта: '03',
+  апреля: '04',
+  мая: '05',
+  июня: '06',
+  июля: '07',
+  августа: '08',
+  сентября: '09',
+  октября: '10',
+  ноября: '11',
+  декабря: '12'
 };
 
 const norm = (value: string): string =>
@@ -162,6 +185,131 @@ const readRows = (buffer: Buffer): Record<string, unknown>[] => {
   });
 };
 
+const timeToMinutes = (hhmm: string): number => {
+  const [h, m] = hhmm.split(':').map((v) => Number(v));
+  return h * 60 + m;
+};
+
+const normalizeRu = (value: string): string => value.trim().toLowerCase().replaceAll('ё', 'е');
+
+const parseScheduleDate = (line: string): { dateOnly: string; tail: string } | null => {
+  const match = line.match(/^(\d{1,2})\s+([а-яА-ЯёЁ]+)\s+(\d{4})(?:\s+(.*))?$/);
+  if (!match) return null;
+
+  const day = Number(match[1]);
+  const monthName = normalizeRu(match[2] ?? '');
+  const year = Number(match[3]);
+  const tail = (match[4] ?? '').trim();
+
+  const month = ruMonthToNumber[monthName];
+  if (!month || Number.isNaN(day) || Number.isNaN(year) || day < 1 || day > 31) return null;
+
+  const dateOnly = `${String(year).padStart(4, '0')}-${month}-${String(day).padStart(2, '0')}`;
+  return { dateOnly, tail };
+};
+
+const extractTimeRanges = (line: string): DailyInterval[] => {
+  const ranges: DailyInterval[] = [];
+  const regex = /([01]\d|2[0-3]):([0-5]\d)\s*-\s*([01]\d|2[0-3]):([0-5]\d)/g;
+
+  for (const match of line.matchAll(regex)) {
+    const start = `${match[1]}:${match[2]}`;
+    const end = `${match[3]}:${match[4]}`;
+    if (!hhmmRegex.test(start) || !hhmmRegex.test(end)) continue;
+    if (timeToMinutes(end) <= timeToMinutes(start)) continue;
+    ranges.push({ startTime: start, endTime: end });
+  }
+
+  return ranges;
+};
+
+const assertIntervalsValid = (intervals: DailyInterval[], context: { staffName: string; dateOnly: string }) => {
+  const sorted = [...intervals].sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+  for (let i = 1; i < sorted.length; i += 1) {
+    const prev = sorted[i - 1]!;
+    const curr = sorted[i]!;
+    if (timeToMinutes(curr.startTime) < timeToMinutes(prev.endTime)) {
+      throw badRequest('Overlapping schedule intervals in PDF', context);
+    }
+  }
+};
+
+const extractScheduleTextFromPdf = async (buffer: Buffer): Promise<string> => {
+  try {
+    const parsed = await pdfParse(buffer);
+    const text = parsed.text?.trim();
+    if (!text) {
+      throw badRequest('PDF has no extractable text');
+    }
+    return text;
+  } catch (error) {
+    if ((error as Error).message?.includes('PDF has no extractable text')) {
+      throw error;
+    }
+    throw badRequest('Failed to parse PDF schedule', { reason: (error as Error).message });
+  }
+};
+
+const parseSchedulePdfText = (text: string): Map<string, Map<string, DailyInterval[]>> => {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+
+  const result = new Map<string, Map<string, DailyInterval[]>>();
+  let currentStaff: string | null = null;
+  let currentDate: string | null = null;
+
+  for (const line of lines) {
+    const lower = normalizeRu(line);
+    if (lower.includes('график работы персонала')) continue;
+
+    const dateParsed = parseScheduleDate(line);
+    if (dateParsed) {
+      if (!currentStaff) continue;
+      const staffDays = result.get(currentStaff) ?? new Map<string, DailyInterval[]>();
+      const existing = staffDays.get(dateParsed.dateOnly) ?? [];
+      const ranges = extractTimeRanges(dateParsed.tail);
+      staffDays.set(dateParsed.dateOnly, [...existing, ...ranges]);
+      result.set(currentStaff, staffDays);
+      currentDate = dateParsed.dateOnly;
+      continue;
+    }
+
+    const staffMatch = line.match(/^(.+?)\.\s+.+$/);
+    if (staffMatch && !/^\d{1,2}\s/.test(line)) {
+      const staffName = (staffMatch[1] ?? '').trim();
+      if (!staffName) continue;
+      currentStaff = staffName;
+      currentDate = null;
+      if (!result.has(staffName)) {
+        result.set(staffName, new Map<string, DailyInterval[]>());
+      }
+      continue;
+    }
+
+    const ranges = extractTimeRanges(line);
+    if (ranges.length > 0 && currentStaff && currentDate) {
+      const staffDays = result.get(currentStaff)!;
+      const existing = staffDays.get(currentDate) ?? [];
+      staffDays.set(currentDate, [...existing, ...ranges]);
+      continue;
+    }
+  }
+
+  if (result.size === 0) {
+    throw badRequest('No schedule data detected in PDF');
+  }
+
+  for (const [staffName, days] of result) {
+    for (const [dateOnly, intervals] of days) {
+      assertIntervalsValid(intervals, { staffName, dateOnly });
+    }
+  }
+
+  return result;
+};
+
 const initJob = async (type: ImportType, uploadedByStaffId: string) => {
   return prisma.importJob.create({
     data: {
@@ -229,6 +377,65 @@ const mapGender = (raw: unknown): Gender => {
   if (value === 'ж' || value === 'f' || value === 'female') return Gender.FEMALE;
   if (value === 'м' || value === 'm' || value === 'male') return Gender.MALE;
   return Gender.UNKNOWN;
+};
+
+export const importScheduleFromBuffer = async (
+  buffer: Buffer,
+  uploadedByStaffId: string
+): Promise<ImportResult> => {
+  const job = await initJob('SCHEDULE', uploadedByStaffId);
+  const counters: Counters = { created: 0, updated: 0, skipped: 0, errors: 0 };
+
+  try {
+    const text = await extractScheduleTextFromPdf(buffer);
+    const parsedByStaff = parseSchedulePdfText(text);
+
+    for (const [staffName, dailyEntries] of parsedByStaff) {
+      try {
+        const staff = await findOrCreateStaffByName(staffName);
+        const days = Array.from(dailyEntries.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+
+        if (days.length === 0) {
+          counters.skipped += 1;
+          continue;
+        }
+
+        const minDate = parseDateOnlyToUtc(days[0]![0]);
+        const maxDateExclusive = dayjs(parseDateOnlyToUtc(days[days.length - 1]![0])).add(1, 'day').toDate();
+
+        await prisma.$transaction(async (tx) => {
+          await tx.staffDailySchedule.deleteMany({
+            where: {
+              staffId: staff.id,
+              date: {
+                gte: minDate,
+                lt: maxDateExclusive
+              }
+            }
+          });
+
+          await tx.staffDailySchedule.createMany({
+            data: days.map(([dateOnly, intervals]) => ({
+              staffId: staff.id,
+              date: parseDateOnlyToUtc(dateOnly),
+              intervals: JSON.parse(JSON.stringify(intervals)) as Prisma.InputJsonValue
+            }))
+          });
+        });
+
+        counters.created += days.length;
+      } catch (error) {
+        counters.errors += 1;
+        await addJobError(job.id, 0, { staffName }, (error as Error).message);
+      }
+    }
+
+    await finishJob(job.id, counters, 'DONE');
+    return { jobId: job.id, ...counters };
+  } catch (error) {
+    await finishJob(job.id, counters, 'FAILED');
+    throw error;
+  }
 };
 
 export const importClientsFromBuffer = async (
