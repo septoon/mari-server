@@ -9,6 +9,7 @@ import { validateBody, validateParams, validateQuery } from '../../middlewares/v
 import { asyncHandler } from '../../utils/async-handler';
 import { hashToken, randomToken, sha1 } from '../../utils/crypto';
 import { businessRule, conflict, forbidden, notFound } from '../../utils/errors';
+import { sendEmail } from '../../utils/mailer';
 import { normalizePhone10, toPhoneE164 } from '../../utils/phone';
 import { hashSecret, validatePin } from '../../utils/password';
 import { ok } from '../../utils/response';
@@ -96,6 +97,9 @@ const buildTemporaryPhone10 = (name: string, attempt: number): string => {
   const value = Number(BigInt(`0x${hash.slice(0, 12)}`) % 1000000000n);
   return `9${value.toString().padStart(9, '0')}`;
 };
+
+const buildSetPinLink = (token: string): string => `${env.STAFF_WEB_BASE_URL}/staff/set-pin?token=${token}`;
+const buildResetPinLink = (token: string): string => `${env.STAFF_WEB_BASE_URL}/staff/reset-pin?token=${token}`;
 
 export const staffRouter = Router();
 
@@ -239,9 +243,41 @@ staffRouter.post(
       }
     });
 
-    const inviteLink = `${env.APP_BASE_URL}/staff/set-pin?token=${rawToken}`;
+    const inviteLink = buildSetPinLink(rawToken);
 
-    return ok(res, { staffId: staff.id, inviteLink }, 201);
+    let emailDeliveryMode: 'SMTP' | 'DEV_LOG' | null = null;
+    let emailMessageId: string | null = null;
+    let emailPreview: string | null = null;
+    if (staff.email) {
+      const result = await sendEmail({
+        to: staff.email,
+        subject: 'Mari Beauty: придумайте PIN для входа',
+        text: [
+          `Здравствуйте${staff.name ? `, ${staff.name}` : ''}!`,
+          '',
+          'Для входа в рабочий кабинет задайте PIN-код по ссылке:',
+          inviteLink,
+          '',
+          'Ссылка действует 3 дня.'
+        ].join('\n')
+      });
+      emailDeliveryMode = result.deliveryMode;
+      emailMessageId = result.messageId ?? null;
+      emailPreview = result.preview ?? null;
+    }
+
+    return ok(
+      res,
+      {
+        staffId: staff.id,
+        inviteLink,
+        emailSent: Boolean(staff.email),
+        emailDeliveryMode,
+        emailMessageId,
+        ...(env.NODE_ENV !== 'production' && emailPreview ? { emailPreview } : {})
+      },
+      201
+    );
   })
 );
 
@@ -321,8 +357,27 @@ staffRouter.post(
           expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24)
         }
       });
-      resetLink = `${env.APP_BASE_URL}/staff/reset-pin?token=${rawToken}`;
+      resetLink = buildResetPinLink(rawToken);
       console.log(`[RESET_PIN] ${staff.phoneE164 ?? toPhoneE164(phone10)} -> ${resetLink}`);
+
+      if (staff.email) {
+        try {
+          await sendEmail({
+            to: staff.email,
+            subject: 'Mari Beauty: восстановление PIN',
+            text: [
+              `Здравствуйте${staff.name ? `, ${staff.name}` : ''}!`,
+              '',
+              'Для восстановления PIN-кода перейдите по ссылке:',
+              resetLink,
+              '',
+              'Ссылка действует 24 часа.'
+            ].join('\n')
+          });
+        } catch (error) {
+          console.error('[RESET_PIN_MAIL_ERROR]', { staffId: staff.id, error });
+        }
+      }
     }
 
     return ok(res, {

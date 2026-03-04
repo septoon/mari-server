@@ -12,6 +12,10 @@ const envSchema = z.object({
   ACCESS_TOKEN_TTL_SEC: z.coerce.number().int().positive().default(900),
   REFRESH_TOKEN_TTL_SEC: z.coerce.number().int().positive().default(60 * 60 * 24 * 30),
   APP_BASE_URL: z.string().url().default('http://localhost:3000'),
+  API_BASE_URL: z.string().url().optional(),
+  STAFF_WEB_BASE_URL: z.string().url().optional(),
+  CLIENT_WEB_BASE_URL: z.string().url().optional(),
+  CLIENT_WEB_RESET_PASSWORD_PATH: z.string().default('/reset-password'),
   TZ_DEFAULT: z.string().default('Europe/Moscow'),
   DEV_SHOW_LINKS: z.enum(['true', 'false']).default('true'),
   SMTP_HOST: z.string().min(1).optional(),
@@ -46,6 +50,14 @@ const normalizeMediaPublicBase = (value: string): string => {
   return withPrefix.replace(/\/+$/, '');
 };
 
+const normalizeBaseUrl = (value: string): string => value.trim().replace(/\/+$/, '');
+const normalizePath = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return '/';
+  const withPrefix = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  return withPrefix.replace(/\/+$/, '') || '/';
+};
+
 const mediaVariantWidths = [...new Set(parsed.data.MEDIA_VARIANT_WIDTHS.split(',').map((item) => Number(item.trim())))]
   .filter((value) => Number.isInteger(value) && value > 0)
   .sort((a, b) => a - b);
@@ -57,6 +69,11 @@ if (mediaVariantWidths.length === 0) {
 
 export const env = {
   ...parsed.data,
+  APP_BASE_URL: normalizeBaseUrl(parsed.data.APP_BASE_URL),
+  API_BASE_URL: normalizeBaseUrl(parsed.data.API_BASE_URL ?? parsed.data.APP_BASE_URL),
+  STAFF_WEB_BASE_URL: normalizeBaseUrl(parsed.data.STAFF_WEB_BASE_URL ?? parsed.data.APP_BASE_URL),
+  CLIENT_WEB_BASE_URL: normalizeBaseUrl(parsed.data.CLIENT_WEB_BASE_URL ?? parsed.data.APP_BASE_URL),
+  CLIENT_WEB_RESET_PASSWORD_PATH: normalizePath(parsed.data.CLIENT_WEB_RESET_PASSWORD_PATH),
   DEV_SHOW_LINKS: parsed.data.DEV_SHOW_LINKS === 'true',
   SMTP_SECURE: parsed.data.SMTP_SECURE === 'true',
   MEDIA_PUBLIC_BASE: normalizeMediaPublicBase(parsed.data.MEDIA_PUBLIC_BASE),

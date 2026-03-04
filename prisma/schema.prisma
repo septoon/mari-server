@@ -104,11 +104,18 @@ model ClientAccount {
   clientId     String    @unique
   email        String?   @unique
   passwordHash String
+  passwordResetTokenHash String?
+  passwordResetExpiresAt DateTime?
+  passwordResetUsedAt    DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
   lastLoginAt  DateTime?
 
   client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([passwordResetTokenHash])
+  @@index([passwordResetExpiresAt])
+  @@index([passwordResetUsedAt])
 }
 
 model Position {
