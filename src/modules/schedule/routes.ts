@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import dayjs from 'dayjs';
 import { z } from 'zod';
 
 import { prisma } from '../../db/prisma';
@@ -7,6 +8,7 @@ import { validateBody, validateParams, validateQuery } from '../../middlewares/v
 import { asyncHandler } from '../../utils/async-handler';
 import { badRequest, notFound } from '../../utils/errors';
 import { ok } from '../../utils/response';
+import { MSK_TZ, parseDateOnlyToUtc } from '../../utils/time';
 
 const hhmmRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -21,6 +23,11 @@ const idParamSchema = z.object({
 const rangeQuerySchema = z.object({
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional()
+});
+
+const workingHoursRangeQuerySchema = z.object({
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
 });
 
 const workingHoursSchema = z.object({
@@ -44,6 +51,42 @@ const rangeCreateSchema = z.object({
 const timeToMinutes = (hhmm: string): number => {
   const [h, m] = hhmm.split(':').map((v) => Number(v));
   return h * 60 + m;
+};
+
+const readDailyIntervals = (
+  value: unknown
+): Array<{
+  startTime: string;
+  endTime: string;
+}> => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const items: Array<{
+    startTime: string;
+    endTime: string;
+  }> = [];
+
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      continue;
+    }
+
+    const record = raw as Record<string, unknown>;
+    const startTime = typeof record.startTime === 'string' ? record.startTime : '';
+    const endTime = typeof record.endTime === 'string' ? record.endTime : '';
+    if (!hhmmRegex.test(startTime) || !hhmmRegex.test(endTime)) {
+      continue;
+    }
+    if (timeToMinutes(endTime) <= timeToMinutes(startTime)) {
+      continue;
+    }
+    items.push({ startTime, endTime });
+  }
+
+  items.sort((left, right) => timeToMinutes(left.startTime) - timeToMinutes(right.startTime));
+  return items;
 };
 
 const assertStaffExists = async (staffId: string) => {
@@ -97,23 +140,59 @@ scheduleRouter.get(
   requireStaff,
   requireStaffRoles('ADMIN', 'OWNER'),
   validateParams(staffParamSchema),
+  validateQuery(workingHoursRangeQuerySchema),
   asyncHandler(async (req, res) => {
     const { staffId } = req.params as z.infer<typeof staffParamSchema>;
+    const query = req.validatedQuery as z.infer<typeof workingHoursRangeQuerySchema>;
     await assertStaffExists(staffId);
 
-    const items = await prisma.workingHours.findMany({
+    const weeklyItems = await prisma.workingHours.findMany({
       where: { staffId },
       orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }]
     });
 
+    let items = weeklyItems.map((item) => ({
+      id: item.id,
+      dayOfWeek: item.dayOfWeek,
+      startTime: item.startTime,
+      endTime: item.endTime
+    }));
+
+    if (items.length === 0 && query.from && query.to) {
+      const from = parseDateOnlyToUtc(query.from);
+      const to = parseDateOnlyToUtc(query.to);
+      if (to < from) {
+        throw badRequest('to must be greater or equal to from');
+      }
+      const toExclusive = new Date(to.getTime() + 24 * 60 * 60 * 1000);
+
+      const dailyRows = await prisma.staffDailySchedule.findMany({
+        where: {
+          staffId,
+          date: {
+            gte: from,
+            lt: toExclusive
+          }
+        },
+        orderBy: [{ date: 'asc' }]
+      });
+
+      items = dailyRows.flatMap((row) => {
+        const intervals = readDailyIntervals(row.intervals);
+        const dayOfWeek = dayjs(row.date).tz(MSK_TZ).day();
+        return intervals.map((interval, index) => ({
+          id: `${row.id}-${index}`,
+          dayOfWeek,
+          date: row.date.toISOString(),
+          startTime: interval.startTime,
+          endTime: interval.endTime
+        }));
+      });
+    }
+
     return ok(res, {
       staffId,
-      items: items.map((item) => ({
-        id: item.id,
-        dayOfWeek: item.dayOfWeek,
-        startTime: item.startTime,
-        endTime: item.endTime
-      }))
+      items
     });
   })
 );

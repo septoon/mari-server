@@ -86,7 +86,8 @@ const appointmentsListQuerySchema = z.object({
 const masterAppointmentsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(50),
-  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
 });
 
 const clientAppointmentsQuerySchema = z.object({
@@ -587,11 +588,11 @@ appointmentsRouter.get(
     const limit = query.limit;
     const skip = (page - 1) * limit;
 
-    const from = query.from ? parseDateOnlyToUtc(query.from) : todayStartMskUtc();
+    const startAt = buildDateRange(query.from, query.to) ?? { gte: todayStartMskUtc() };
 
     const where = {
       staffId: req.auth!.subjectId,
-      startAt: { gte: from }
+      startAt
     };
 
     const [total, rows] = await Promise.all([

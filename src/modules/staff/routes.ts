@@ -8,7 +8,7 @@ import { authenticateRequired, requireStaff, requireStaffRoles } from '../../mid
 import { validateBody, validateParams, validateQuery } from '../../middlewares/validate';
 import { asyncHandler } from '../../utils/async-handler';
 import { hashToken, randomToken, sha1 } from '../../utils/crypto';
-import { businessRule, conflict, forbidden, notFound } from '../../utils/errors';
+import { conflict, forbidden, notFound } from '../../utils/errors';
 import { sendEmail } from '../../utils/mailer';
 import { normalizePhone10, toPhoneE164 } from '../../utils/phone';
 import { hashSecret, validatePin } from '../../utils/password';
@@ -101,6 +101,55 @@ const buildTemporaryPhone10 = (name: string, attempt: number): string => {
 const buildSetPinLink = (token: string): string => `${env.STAFF_WEB_BASE_URL}/staff/set-pin?token=${token}`;
 const buildResetPinLink = (token: string): string => `${env.STAFF_WEB_BASE_URL}/staff/reset-pin?token=${token}`;
 
+const toMediaUrlPath = (relativePath: string): string => {
+  const base = env.MEDIA_PUBLIC_BASE.startsWith('/') ? env.MEDIA_PUBLIC_BASE : `/${env.MEDIA_PUBLIC_BASE}`;
+  const normalizedBase = base.replace(/\/+$/, '');
+  const normalizedPath = relativePath.replace(/^\/+/, '');
+  return `${normalizedBase}/${normalizedPath}`;
+};
+
+const toMediaPublicUrl = (urlPath: string): string => {
+  if (env.MEDIA_PUBLIC_ORIGIN) {
+    return `${env.MEDIA_PUBLIC_ORIGIN.replace(/\/+$/, '')}${urlPath}`;
+  }
+  return `${env.API_BASE_URL.replace(/\/+$/, '')}${urlPath}`;
+};
+
+const resolveStaffAvatarUrl = (row: {
+  specialistProfile: {
+    photoDraft: {
+      originalPath: string;
+      variants: Array<{
+        width: number;
+        urlPath: string;
+        path: string;
+      }>;
+    } | null;
+    photoPublished: {
+      originalPath: string;
+      variants: Array<{
+        width: number;
+        urlPath: string;
+        path: string;
+      }>;
+    } | null;
+  } | null;
+}): string | null => {
+  const asset = row.specialistProfile?.photoDraft ?? row.specialistProfile?.photoPublished;
+  if (!asset) {
+    return null;
+  }
+
+  const preferred = [...asset.variants].sort((left, right) => left.width - right.width).at(-1) ?? null;
+  if (preferred?.urlPath) {
+    return toMediaPublicUrl(preferred.urlPath);
+  }
+  if (preferred?.path) {
+    return toMediaPublicUrl(toMediaUrlPath(preferred.path));
+  }
+  return toMediaPublicUrl(toMediaUrlPath(asset.originalPath));
+};
+
 export const staffRouter = Router();
 
 staffRouter.get(
@@ -135,6 +184,32 @@ staffRouter.get(
         where,
         include: {
           position: true,
+          specialistProfile: {
+            include: {
+              photoDraft: {
+                include: {
+                  variants: {
+                    select: {
+                      width: true,
+                      path: true,
+                      urlPath: true
+                    }
+                  }
+                }
+              },
+              photoPublished: {
+                include: {
+                  variants: {
+                    select: {
+                      width: true,
+                      path: true,
+                      urlPath: true
+                    }
+                  }
+                }
+              }
+            }
+          },
           permissions: {
             where: {
               OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }]
@@ -157,6 +232,7 @@ staffRouter.get(
           role: row.role,
           phoneE164: row.phoneE164,
           email: row.email,
+          avatarUrl: resolveStaffAvatarUrl(row),
           isActive: row.isActive,
           hiredAt: row.hiredAt,
           firedAt: row.firedAt,
@@ -735,26 +811,23 @@ staffRouter.post(
       throw forbidden('OWNER (Владелец) cannot be fired');
     }
 
-    const futureCount = await prisma.appointment.count({
-      where: {
-        staffId: id,
-        startAt: { gt: new Date() },
-        status: {
-          notIn: [AppointmentStatus.CANCELLED, AppointmentStatus.NO_SHOW]
-        }
-      }
-    });
-
-    if (futureCount > 0) {
-      throw businessRule('STAFF_HAS_FUTURE_APPOINTMENTS', 'Cannot fire staff with future appointments', {
-        futureCount
-      });
-    }
-
     const firedAt = parseDateOnlyToUtc(body.firedAt);
     const now = new Date();
 
     const updated = await prisma.$transaction(async (tx) => {
+      const cancelledFutureAppointments = await tx.appointment.updateMany({
+        where: {
+          staffId: id,
+          startAt: { gt: now },
+          status: {
+            notIn: [AppointmentStatus.CANCELLED, AppointmentStatus.NO_SHOW]
+          }
+        },
+        data: {
+          status: AppointmentStatus.CANCELLED
+        }
+      });
+
       const staffUpdated = await tx.staff.update({
         where: { id },
         data: {
@@ -784,19 +857,23 @@ staffRouter.post(
         }
       });
 
-      return staffUpdated;
+      return {
+        staff: staffUpdated,
+        cancelledFutureAppointments: cancelledFutureAppointments.count
+      };
     });
 
     return ok(res, {
       staff: {
-        id: updated.id,
-        name: updated.name,
-        phoneE164: updated.phoneE164,
-        email: updated.email,
-        role: updated.role,
-        firedAt: updated.firedAt,
-        isActive: updated.isActive
-      }
+        id: updated.staff.id,
+        name: updated.staff.name,
+        phoneE164: updated.staff.phoneE164,
+        email: updated.staff.email,
+        role: updated.staff.role,
+        firedAt: updated.staff.firedAt,
+        isActive: updated.staff.isActive
+      },
+      cancelledFutureAppointments: updated.cancelledFutureAppointments
     });
   })
 );
