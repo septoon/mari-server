@@ -398,10 +398,12 @@ const buildSpecialistCard = (row: SpecialistStaffRow, stage: SpecialistStage) =>
   };
 };
 
+const hasActiveServices = (card: ReturnType<typeof buildSpecialistCard>) => card.services.length > 0;
+
 const listSpecialistCards = async (
   db: DbClient,
   stage: SpecialistStage,
-  options: { includeHidden: boolean; onlyActive: boolean; staffId?: string }
+  options: { includeHidden: boolean; onlyActive: boolean; onlyWithServices?: boolean; staffId?: string }
 ) => {
   const rows = await db.staff.findMany({
     where: {
@@ -421,6 +423,7 @@ const listSpecialistCards = async (
   return rows
     .map((row) => buildSpecialistCard(row, stage))
     .filter((row) => options.includeHidden || row.isVisible)
+    .filter((row) => !options.onlyWithServices || hasActiveServices(row))
     .sort((left, right) => {
       if (left.sortOrder !== right.sortOrder) {
         return left.sortOrder - right.sortOrder;
@@ -626,7 +629,8 @@ export const getDraftClientConfig = async (platform: PlatformInput, appVersion?:
   });
   const specialists = await listSpecialistCards(prisma, 'DRAFT', {
     includeHidden: false,
-    onlyActive: true
+    onlyActive: true,
+    onlyWithServices: true
   });
 
   return {
@@ -765,7 +769,8 @@ export const getClientBootstrap = async (platform: PlatformInput, appVersion?: s
   const config = await getOrCreateClientAppConfig();
   const specialists = await listSpecialistCards(prisma, 'PUBLISHED', {
     includeHidden: false,
-    onlyActive: true
+    onlyActive: true,
+    onlyWithServices: true
   });
 
   const publishedConfig = buildPublishedConfigPayload(config, platform, appVersion, now);
@@ -1019,6 +1024,7 @@ export const publishClientFront = async (actorStaffId: string): Promise<PublishR
     });
     const specialistsSnapshot = specialistRows
       .map((row) => buildSpecialistCard(row, 'DRAFT'))
+      .filter((row) => hasActiveServices(row))
       .sort((left, right) => {
         if (left.sortOrder !== right.sortOrder) {
           return left.sortOrder - right.sortOrder;
