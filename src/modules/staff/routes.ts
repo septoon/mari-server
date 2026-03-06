@@ -103,6 +103,12 @@ const buildTemporaryPhone10 = (name: string, attempt: number): string => {
   return `9${value.toString().padStart(9, '0')}`;
 };
 
+const buildArchivedPhone10 = (staffId: string, attempt: number): string => {
+  const hash = sha1(`fired|${staffId}|${attempt}`);
+  const value = Number(BigInt(`0x${hash.slice(0, 12)}`) % 1000000000n);
+  return `9${value.toString().padStart(9, '0')}`;
+};
+
 const buildSetPinLink = (token: string): string => `${env.STAFF_WEB_BASE_URL}/staff/set-pin?token=${token}`;
 const buildResetPinLink = (token: string): string => `${env.STAFF_WEB_BASE_URL}/staff/reset-pin?token=${token}`;
 
@@ -821,6 +827,21 @@ staffRouter.post(
     const now = new Date();
 
     const updated = await prisma.$transaction(async (tx) => {
+      let archivedPhone10 = buildArchivedPhone10(id, 0);
+      let attempt = 0;
+      // Keep unique phone10 so the original phone can be reused for a new invite.
+      while (true) {
+        const existing = await tx.staff.findUnique({
+          where: { phone10: archivedPhone10 },
+          select: { id: true }
+        });
+        if (!existing || existing.id === id) {
+          break;
+        }
+        attempt += 1;
+        archivedPhone10 = buildArchivedPhone10(id, attempt);
+      }
+
       const cancelledFutureAppointments = await tx.appointment.updateMany({
         where: {
           staffId: id,
@@ -838,7 +859,11 @@ staffRouter.post(
         where: { id },
         data: {
           firedAt,
-          isActive: false
+          isActive: false,
+          email: null,
+          phone10: archivedPhone10,
+          phoneE164: toPhoneE164(archivedPhone10),
+          pinHash: null
         }
       });
 
