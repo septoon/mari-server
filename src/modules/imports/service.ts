@@ -543,7 +543,8 @@ export const importClientsFromBuffer = async (
 
 export const importServicesFromBuffer = async (
   buffer: Buffer,
-  uploadedByStaffId: string
+  uploadedByStaffId: string,
+  options?: { createOnly?: boolean }
 ): Promise<ImportResult> => {
   const job = await initJob('SERVICES', uploadedByStaffId);
   const counters: Counters = { created: 0, updated: 0, skipped: 0, errors: 0 };
@@ -605,8 +606,12 @@ export const importServicesFromBuffer = async (
         };
 
         if (existing) {
-          await prisma.service.update({ where: { id: existing.id }, data: payload });
-          counters.updated += 1;
+          if (options?.createOnly) {
+            counters.skipped += 1;
+          } else {
+            await prisma.service.update({ where: { id: existing.id }, data: payload });
+            counters.updated += 1;
+          }
         } else {
           existing = await prisma.service.create({ data: payload });
           counters.created += 1;

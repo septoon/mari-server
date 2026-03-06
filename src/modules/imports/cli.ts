@@ -12,7 +12,10 @@ import {
 type Mode = 'clients' | 'services' | 'appointments' | 'schedule';
 
 const mode = process.argv[2] as Mode | undefined;
-const customPath = process.argv[3];
+const cliArgs = process.argv.slice(3);
+const customPath = cliArgs.find((arg) => !arg.startsWith('--'));
+const createOnly = cliArgs.includes('--create-only');
+const unknownFlags = cliArgs.filter((arg) => arg.startsWith('--') && arg !== '--create-only');
 
 const pickExistingPath = async (candidates: string[]): Promise<string | null> => {
   for (const filePath of candidates) {
@@ -67,8 +70,16 @@ const resolveUploaderStaffId = async (): Promise<string> => {
 const run = async () => {
   if (!mode || !['clients', 'services', 'appointments', 'schedule'].includes(mode)) {
     throw new Error(
-      'Usage: tsx src/modules/imports/cli.ts <clients|services|appointments|schedule> [filePath]'
+      'Usage: tsx src/modules/imports/cli.ts <clients|services|appointments|schedule> [filePath] [--create-only]'
     );
+  }
+
+  if (unknownFlags.length) {
+    throw new Error(`Unknown flags: ${unknownFlags.join(', ')}`);
+  }
+
+  if (createOnly && mode !== 'services') {
+    throw new Error('--create-only is supported only for services import');
   }
 
   const uploaderId = await resolveUploaderStaffId();
@@ -79,7 +90,7 @@ const run = async () => {
     const result = await importClientsFromBuffer(buffer, uploaderId);
     console.log(result);
   } else if (mode === 'services') {
-    const result = await importServicesFromBuffer(buffer, uploaderId);
+    const result = await importServicesFromBuffer(buffer, uploaderId, { createOnly });
     console.log(result);
   } else if (mode === 'appointments') {
     const result = await importAppointmentsFromBuffer(buffer, uploaderId);

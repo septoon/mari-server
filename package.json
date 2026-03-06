@@ -15,6 +15,7 @@
     "seed": "tsx prisma/seed.ts",
     "import:clients": "tsx src/modules/imports/cli.ts clients",
     "import:services": "tsx src/modules/imports/cli.ts services",
+    "import:services:add-only": "tsx src/modules/imports/cli.ts services --create-only",
     "import:appointments": "tsx src/modules/imports/cli.ts appointments",
     "import:schedule": "tsx src/modules/imports/cli.ts schedule",
     "export:clients": "tsx src/modules/exports/cli.ts clients",
