@@ -30,9 +30,14 @@ const setPinSchema = z.object({
   pin: z.string().min(4).max(8)
 });
 
-const resetRequestSchema = z.object({
-  phone: z.string().min(1)
-});
+const resetRequestSchema = z
+  .object({
+    email: z.string().trim().email().optional(),
+    phone: z.string().min(1).optional()
+  })
+  .refine((value) => Boolean(value.email || value.phone), {
+    message: 'email or phone is required'
+  });
 
 const resetConfirmSchema = z.object({
   token: z.string().min(20),
@@ -419,11 +424,18 @@ staffRouter.post(
   validateBody(resetRequestSchema),
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof resetRequestSchema>;
-    const phone10 = normalizePhone10(body.phone);
-    const staff = await prisma.staff.findUnique({ where: { phone10 } });
+    const email = body.email?.trim().toLowerCase();
+    const phone10 = !email && body.phone ? normalizePhone10(body.phone) : null;
+    const staff = email
+      ? await prisma.staff.findFirst({
+          where: { email: { equals: email, mode: 'insensitive' as const } }
+        })
+      : phone10
+        ? await prisma.staff.findUnique({ where: { phone10 } })
+        : null;
 
     let resetLink: string | undefined;
-    if (staff && staff.isActive && !staff.firedAt) {
+    if (staff && staff.email && staff.isActive && !staff.firedAt) {
       const rawToken = randomToken();
       await prisma.staffToken.create({
         data: {
@@ -434,26 +446,20 @@ staffRouter.post(
         }
       });
       resetLink = buildResetPinLink(rawToken);
-      console.log(`[RESET_PIN] ${staff.phoneE164 ?? toPhoneE164(phone10)} -> ${resetLink}`);
+      console.log(`[RESET_PIN] ${staff.email} -> ${resetLink}`);
 
-      if (staff.email) {
-        try {
-          await sendEmail({
-            to: staff.email,
-            subject: 'Mari Beauty: восстановление PIN',
-            text: [
-              `Здравствуйте${staff.name ? `, ${staff.name}` : ''}!`,
-              '',
-              'Для восстановления PIN-кода перейдите по ссылке:',
-              resetLink,
-              '',
-              'Ссылка действует 24 часа.'
-            ].join('\n')
-          });
-        } catch (error) {
-          console.error('[RESET_PIN_MAIL_ERROR]', { staffId: staff.id, error });
-        }
-      }
+      await sendEmail({
+        to: staff.email,
+        subject: 'Mari Beauty: восстановление PIN',
+        text: [
+          `Здравствуйте${staff.name ? `, ${staff.name}` : ''}!`,
+          '',
+          'Для восстановления PIN-кода перейдите по ссылке:',
+          resetLink,
+          '',
+          'Ссылка действует 24 часа.'
+        ].join('\n')
+      });
     }
 
     return ok(res, {
