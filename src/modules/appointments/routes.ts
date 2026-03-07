@@ -14,6 +14,7 @@ import {
   authenticateOptional,
   authenticateRequired,
   requireClient,
+  hasPermission,
   requireStaff,
   requireStaffRoles,
   requireStaffRolesOrPermission,
@@ -181,7 +182,7 @@ const pickStaffCandidatesForReschedule = async (
       where: {
         isActive: true,
         firedAt: null,
-        role: { in: ['MASTER', 'ADMIN', 'OWNER'] }
+        role: { in: ['MASTER', 'ADMIN', 'OWNER', 'DEVELOPER', 'SMM'] }
       },
       select: { id: true, name: true },
       orderBy: { name: 'asc' }
@@ -246,6 +247,10 @@ appointmentsRouter.post(
   validateBody(createAppointmentSchema),
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof createAppointmentSchema>;
+
+    if (req.auth?.subjectType === 'STAFF' && !hasPermission(req, 'EDIT_JOURNAL')) {
+      throw forbidden('No permission to edit journal');
+    }
 
     const startAt = new Date(body.startAt);
     if (Number.isNaN(startAt.getTime())) {
@@ -482,7 +487,7 @@ appointmentsRouter.get(
   '/appointments',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_JOURNAL', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('VIEW_JOURNAL', 'OWNER'),
   validateQuery(appointmentsListQuerySchema),
   asyncHandler(async (req, res) => {
     const query = req.validatedQuery as z.infer<typeof appointmentsListQuerySchema>;
@@ -583,7 +588,7 @@ appointmentsRouter.get(
   authenticateRequired,
   requireStaff,
   requireStaffRoles('MASTER'),
-  requirePermission('ACCESS_JOURNAL'),
+  requirePermission('VIEW_JOURNAL'),
   validateQuery(masterAppointmentsQuerySchema),
   asyncHandler(async (req, res) => {
     const query = req.validatedQuery as z.infer<typeof masterAppointmentsQuerySchema>;
@@ -646,6 +651,7 @@ appointmentsRouter.patch(
   authenticateRequired,
   requireStaff,
   requireStaffRoles('MASTER', 'ADMIN', 'OWNER'),
+  requirePermission('EDIT_JOURNAL'),
   validateParams(idParamSchema),
   validateBody(statusUpdateSchema),
   asyncHandler(async (req, res) => {
@@ -695,6 +701,7 @@ appointmentsRouter.patch(
   authenticateRequired,
   requireStaff,
   requireStaffRoles('ADMIN', 'OWNER'),
+  requirePermission('EDIT_JOURNAL'),
   validateParams(idParamSchema),
   validateBody(rescheduleSchema),
   asyncHandler(async (req, res) => {

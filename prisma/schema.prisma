@@ -23,6 +23,8 @@ enum StaffRole {
   OWNER
   ADMIN
   MASTER
+  DEVELOPER
+  SMM
 }
 
 enum AppointmentStatus {

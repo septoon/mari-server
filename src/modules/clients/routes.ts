@@ -157,7 +157,7 @@ clientsRouter.get(
   '/',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_CLIENTS', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('VIEW_CLIENTS', 'OWNER'),
   validateQuery(listClientsQuerySchema),
   asyncHandler(async (req, res) => {
     const query = req.validatedQuery as z.infer<typeof listClientsQuerySchema>;
@@ -229,7 +229,7 @@ clientsRouter.get(
   '/:id',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_CLIENTS', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('VIEW_CLIENTS', 'OWNER'),
   validateParams(clientIdParamSchema),
   asyncHandler(async (req, res) => {
     const { id } = req.params as z.infer<typeof clientIdParamSchema>;
@@ -271,6 +271,7 @@ clientsRouter.patch(
   '/:id/discount',
   authenticateRequired,
   requireStaff,
+  requirePermission('EDIT_CLIENTS'),
   requirePermission('MANAGE_CLIENT_DISCOUNTS'),
   validateParams(clientIdParamSchema),
   validateBody(updateDiscountSchema),
@@ -387,6 +388,7 @@ clientsRouter.post(
   '/loyalty/upsert',
   authenticateRequired,
   requireStaff,
+  requirePermission('EDIT_CLIENTS'),
   requirePermission('MANAGE_CLIENT_DISCOUNTS'),
   validateBody(upsertLoyaltySchema),
   asyncHandler(async (req, res) => {
@@ -421,7 +423,7 @@ clientsRouter.post(
   '/phone/normalize',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_CLIENTS', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('VIEW_CLIENTS', 'OWNER'),
   validateBody(z.object({ phone: z.string().min(1) })),
   asyncHandler(async (req, res) => {
     const body = req.body as { phone: string };

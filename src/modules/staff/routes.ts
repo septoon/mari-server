@@ -7,6 +7,7 @@ import { prisma } from '../../db/prisma';
 import {
   authenticateRequired,
   requireStaff,
+  requireStaffRolesOrPermissions,
   requireStaffRoles,
   requireStaffRolesOrPermission,
 } from '../../middlewares/auth';
@@ -29,7 +30,7 @@ const inviteSchema = z.object({
   phone: z.string().min(1),
   email: z.string().email().optional(),
   name: z.string().min(1),
-  role: z.enum(['ADMIN', 'MASTER']),
+  role: z.enum(['ADMIN', 'MASTER', 'DEVELOPER', 'SMM']),
   positionName: z.string().min(1).optional(),
   hiredAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
 });
@@ -54,7 +55,7 @@ const resetConfirmSchema = z.object({
 });
 
 const roleUpdateSchema = z.object({
-  role: z.enum(['ADMIN', 'MASTER'])
+  role: z.enum(['ADMIN', 'MASTER', 'DEVELOPER', 'SMM'])
 });
 
 const fireSchema = z.object({
@@ -89,7 +90,7 @@ const permissionParamsSchema = z.object({
 const staffListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(50),
-  role: z.enum(['OWNER', 'ADMIN', 'MASTER']).optional(),
+  role: z.enum(['OWNER', 'ADMIN', 'MASTER', 'DEVELOPER', 'SMM']).optional(),
   isActive: z.union([z.literal('true'), z.literal('false')]).optional(),
   search: z.string().trim().min(1).optional()
 });
@@ -176,7 +177,7 @@ staffRouter.get(
   '/',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_STAFF', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermissions(['VIEW_STAFF', 'VIEW_JOURNAL', 'VIEW_SCHEDULE'], 'OWNER'),
   validateQuery(staffListQuerySchema),
   asyncHandler(async (req, res) => {
     const query = req.validatedQuery as z.infer<typeof staffListQuerySchema>;
@@ -278,7 +279,7 @@ staffRouter.post(
   '/invite',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_STAFF', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('EDIT_STAFF', 'OWNER'),
   validateBody(inviteSchema),
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof inviteSchema>;
@@ -543,7 +544,7 @@ staffRouter.patch(
   '/:id/contact',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_STAFF', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('EDIT_STAFF', 'OWNER'),
   validateParams(idParamSchema),
   validateBody(contactUpdateSchema),
   asyncHandler(async (req, res) => {
@@ -604,7 +605,7 @@ staffRouter.get(
   '/:id/services',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_STAFF', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('VIEW_STAFF', 'OWNER'),
   validateParams(idParamSchema),
   asyncHandler(async (req, res) => {
     const { id } = req.params as z.infer<typeof idParamSchema>;
@@ -640,7 +641,7 @@ staffRouter.put(
   '/:id/services',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_STAFF', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('EDIT_STAFF', 'OWNER'),
   validateParams(idParamSchema),
   validateBody(serviceAssignmentsSchema),
   asyncHandler(async (req, res) => {
@@ -740,7 +741,7 @@ staffRouter.get(
   '/permissions/catalog',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_STAFF', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('VIEW_STAFF', 'OWNER'),
   asyncHandler(async (_req, res) => {
     return ok(res, { items: STAFF_PERMISSION_CATALOG });
   })
@@ -750,7 +751,7 @@ staffRouter.get(
   '/:id/permissions',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_STAFF', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('VIEW_STAFF', 'OWNER'),
   validateParams(idParamSchema),
   asyncHandler(async (req, res) => {
     const { id } = req.params as z.infer<typeof idParamSchema>;

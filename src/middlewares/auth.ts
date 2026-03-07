@@ -5,6 +5,28 @@ import { prisma } from '../db/prisma';
 import { forbidden, unauthorized } from '../utils/errors';
 import { verifyAccessToken } from '../utils/jwt';
 
+const PERMISSION_EQUIVALENTS: Record<string, string[]> = {
+  VIEW_JOURNAL: ['VIEW_JOURNAL', 'EDIT_JOURNAL', 'ACCESS_JOURNAL'],
+  EDIT_JOURNAL: ['EDIT_JOURNAL', 'ACCESS_JOURNAL'],
+  VIEW_SCHEDULE: ['VIEW_SCHEDULE', 'EDIT_SCHEDULE', 'ACCESS_SCHEDULE'],
+  EDIT_SCHEDULE: ['EDIT_SCHEDULE', 'ACCESS_SCHEDULE'],
+  VIEW_CLIENTS: ['VIEW_CLIENTS', 'EDIT_CLIENTS', 'ACCESS_CLIENTS'],
+  EDIT_CLIENTS: ['EDIT_CLIENTS', 'ACCESS_CLIENTS'],
+  VIEW_SERVICES: ['VIEW_SERVICES', 'EDIT_SERVICES', 'ACCESS_SERVICES'],
+  EDIT_SERVICES: ['EDIT_SERVICES', 'ACCESS_SERVICES'],
+  VIEW_STAFF: ['VIEW_STAFF', 'EDIT_STAFF', 'ACCESS_STAFF'],
+  EDIT_STAFF: ['EDIT_STAFF', 'ACCESS_STAFF'],
+  ACCESS_JOURNAL: ['ACCESS_JOURNAL', 'VIEW_JOURNAL', 'EDIT_JOURNAL'],
+  ACCESS_SCHEDULE: ['ACCESS_SCHEDULE', 'VIEW_SCHEDULE', 'EDIT_SCHEDULE'],
+  ACCESS_CLIENTS: ['ACCESS_CLIENTS', 'VIEW_CLIENTS', 'EDIT_CLIENTS'],
+  ACCESS_SERVICES: ['ACCESS_SERVICES', 'VIEW_SERVICES', 'EDIT_SERVICES'],
+  ACCESS_STAFF: ['ACCESS_STAFF', 'VIEW_STAFF', 'EDIT_STAFF'],
+};
+
+const resolvePermissionCandidates = (permissionCode: string): string[] => {
+  return PERMISSION_EQUIVALENTS[permissionCode] ?? [permissionCode];
+};
+
 const extractBearer = (req: Request): string | null => {
   const header = req.headers.authorization;
   if (!header) return null;
@@ -113,10 +135,30 @@ export const requireStaffRolesOrPermission = (permissionCode: string, ...roles: 
   };
 };
 
+export const requireStaffRolesOrPermissions = (
+  permissionCodes: string[],
+  ...roles: StaffRole[]
+) => {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    if (!req.auth || req.auth.subjectType !== 'STAFF') {
+      return next(unauthorized('Staff authentication required'));
+    }
+    if (req.auth.staffRole && roles.includes(req.auth.staffRole)) {
+      return next();
+    }
+    if (permissionCodes.some((code) => hasPermission(req, code))) {
+      return next();
+    }
+    return next(forbidden());
+  };
+};
+
 export const hasPermission = (req: Request, permissionCode: string): boolean => {
   if (!req.auth || req.auth.subjectType !== 'STAFF') return false;
   if (req.auth.staffRole === 'OWNER') return true;
-  return req.auth.permissions?.includes(permissionCode) ?? false;
+  const candidates = resolvePermissionCandidates(permissionCode);
+  const permissions = req.auth.permissions ?? [];
+  return candidates.some((code) => permissions.includes(code));
 };
 
 export const requirePermission = (permissionCode: string) => {

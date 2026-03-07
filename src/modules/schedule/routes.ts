@@ -142,7 +142,7 @@ scheduleRouter.get(
   '/staff/:staffId/working-hours',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_SCHEDULE', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('VIEW_SCHEDULE', 'OWNER'),
   validateParams(staffParamSchema),
   validateQuery(workingHoursRangeQuerySchema),
   asyncHandler(async (req, res) => {
@@ -205,7 +205,7 @@ scheduleRouter.put(
   '/staff/:staffId/working-hours',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_SCHEDULE', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('EDIT_SCHEDULE', 'OWNER'),
   validateParams(staffParamSchema),
   validateBody(workingHoursSchema),
   asyncHandler(async (req, res) => {
@@ -250,7 +250,7 @@ scheduleRouter.get(
   '/staff/:staffId/time-off',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_SCHEDULE', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('VIEW_SCHEDULE', 'OWNER'),
   validateParams(staffParamSchema),
   validateQuery(rangeQuerySchema),
   asyncHandler(async (req, res) => {
@@ -291,7 +291,7 @@ scheduleRouter.post(
   '/staff/:staffId/time-off',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_SCHEDULE', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('EDIT_SCHEDULE', 'OWNER'),
   validateParams(staffParamSchema),
   validateBody(rangeCreateSchema),
   asyncHandler(async (req, res) => {
@@ -331,7 +331,7 @@ scheduleRouter.delete(
   '/time-off/:id',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_SCHEDULE', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('EDIT_SCHEDULE', 'OWNER'),
   validateParams(idParamSchema),
   asyncHandler(async (req, res) => {
     const { id } = req.params as z.infer<typeof idParamSchema>;
@@ -344,7 +344,7 @@ scheduleRouter.get(
   '/staff/:staffId/blocks',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_SCHEDULE', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('VIEW_SCHEDULE', 'OWNER'),
   validateParams(staffParamSchema),
   validateQuery(rangeQuerySchema),
   asyncHandler(async (req, res) => {
@@ -385,7 +385,7 @@ scheduleRouter.post(
   '/staff/:staffId/blocks',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_SCHEDULE', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('EDIT_SCHEDULE', 'OWNER'),
   validateParams(staffParamSchema),
   validateBody(rangeCreateSchema),
   asyncHandler(async (req, res) => {
@@ -425,7 +425,7 @@ scheduleRouter.delete(
   '/blocks/:id',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_SCHEDULE', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('EDIT_SCHEDULE', 'OWNER'),
   validateParams(idParamSchema),
   asyncHandler(async (req, res) => {
     const { id } = req.params as z.infer<typeof idParamSchema>;

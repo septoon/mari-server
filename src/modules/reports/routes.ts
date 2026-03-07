@@ -26,7 +26,7 @@ reportsRouter.get(
   '/overview',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('VIEW_FINANCIAL_STATS', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('VIEW_FINANCIAL_STATS', 'OWNER'),
   validateQuery(overviewQuerySchema),
   asyncHandler(async (req, res) => {
     const query = req.validatedQuery as z.infer<typeof overviewQuerySchema>;

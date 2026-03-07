@@ -87,11 +87,11 @@ export const resolveStaffCandidates = async (
   }
 
   const staff = await prisma.staff.findMany({
-    where: {
-      isActive: true,
-      firedAt: null,
-      role: { in: ['MASTER', 'ADMIN', 'OWNER'] }
-    },
+      where: {
+        isActive: true,
+        firedAt: null,
+        role: { in: ['MASTER', 'ADMIN', 'OWNER', 'DEVELOPER', 'SMM'] }
+      },
     orderBy: { name: 'asc' }
   });
 

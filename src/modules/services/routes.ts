@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import {
   authenticateRequired,
+  requirePermission,
   requireStaff,
   requireStaffRolesOrPermission,
 } from '../../middlewares/auth';
@@ -107,7 +108,7 @@ servicesRouter.get(
 servicesRouter.use(
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('ACCESS_SERVICES', 'ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('VIEW_SERVICES', 'OWNER'),
 );
 
 servicesRouter.get(
@@ -126,11 +127,22 @@ servicesRouter.get(
   })
 );
 
-servicesRouter.post('/', validateBody(servicePayloadSchema), createServiceHandler);
-servicesRouter.post('/create', validateBody(servicePayloadSchema), createServiceHandler);
+servicesRouter.post(
+  '/',
+  requirePermission('EDIT_SERVICES'),
+  validateBody(servicePayloadSchema),
+  createServiceHandler,
+);
+servicesRouter.post(
+  '/create',
+  requirePermission('EDIT_SERVICES'),
+  validateBody(servicePayloadSchema),
+  createServiceHandler,
+);
 
 servicesRouter.patch(
   '/:id',
+  requirePermission('EDIT_SERVICES'),
   validateParams(idParamSchema),
   validateBody(servicePayloadSchema),
   asyncHandler(async (req, res) => {
@@ -174,6 +186,7 @@ servicesRouter.patch(
 
 servicesRouter.put(
   '/:id',
+  requirePermission('EDIT_SERVICES'),
   validateParams(idParamSchema),
   validateBody(servicePayloadSchema),
   asyncHandler(async (req, res) => {
@@ -217,6 +230,7 @@ servicesRouter.put(
 
 servicesRouter.delete(
   '/:id',
+  requirePermission('EDIT_SERVICES'),
   validateParams(idParamSchema),
   asyncHandler(async (req, res) => {
     const { id } = req.params as z.infer<typeof idParamSchema>;
@@ -234,6 +248,7 @@ servicesRouter.delete(
 
 servicesRouter.post(
   '/categories',
+  requirePermission('EDIT_SERVICES'),
   validateBody(categoryPayloadSchema),
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof categoryPayloadSchema>;
@@ -255,6 +270,7 @@ servicesRouter.post(
 
 servicesRouter.post(
   '/category',
+  requirePermission('EDIT_SERVICES'),
   validateBody(categoryPayloadSchema),
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof categoryPayloadSchema>;
@@ -276,6 +292,7 @@ servicesRouter.post(
 
 servicesRouter.patch(
   '/categories/:id',
+  requirePermission('EDIT_SERVICES'),
   validateParams(idParamSchema),
   validateBody(categoryPayloadSchema),
   asyncHandler(async (req, res) => {
@@ -310,6 +327,7 @@ servicesRouter.patch(
 
 servicesRouter.patch(
   '/category/:id',
+  requirePermission('EDIT_SERVICES'),
   validateParams(idParamSchema),
   validateBody(categoryPayloadSchema),
   asyncHandler(async (req, res) => {
@@ -344,6 +362,7 @@ servicesRouter.patch(
 
 servicesRouter.delete(
   '/categories/:id',
+  requirePermission('EDIT_SERVICES'),
   validateParams(idParamSchema),
   asyncHandler(async (req, res) => {
     const { id } = req.params as z.infer<typeof idParamSchema>;
@@ -368,6 +387,7 @@ servicesRouter.delete(
 
 servicesRouter.delete(
   '/category/:id',
+  requirePermission('EDIT_SERVICES'),
   validateParams(idParamSchema),
   asyncHandler(async (req, res) => {
     const { id } = req.params as z.infer<typeof idParamSchema>;
