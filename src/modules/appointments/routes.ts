@@ -15,7 +15,9 @@ import {
   authenticateRequired,
   requireClient,
   requireStaff,
-  requireStaffRoles
+  requireStaffRoles,
+  requireStaffRolesOrPermission,
+  requirePermission,
 } from '../../middlewares/auth';
 import { validateBody, validateParams, validateQuery } from '../../middlewares/validate';
 import { asyncHandler } from '../../utils/async-handler';
@@ -480,7 +482,7 @@ appointmentsRouter.get(
   '/appointments',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('ACCESS_JOURNAL', 'ADMIN', 'OWNER'),
   validateQuery(appointmentsListQuerySchema),
   asyncHandler(async (req, res) => {
     const query = req.validatedQuery as z.infer<typeof appointmentsListQuerySchema>;
@@ -581,6 +583,7 @@ appointmentsRouter.get(
   authenticateRequired,
   requireStaff,
   requireStaffRoles('MASTER'),
+  requirePermission('ACCESS_JOURNAL'),
   validateQuery(masterAppointmentsQuerySchema),
   asyncHandler(async (req, res) => {
     const query = req.validatedQuery as z.infer<typeof masterAppointmentsQuerySchema>;

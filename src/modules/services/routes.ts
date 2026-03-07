@@ -2,7 +2,11 @@ import { Router } from 'express';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 
-import { authenticateRequired, requireStaff, requireStaffRoles } from '../../middlewares/auth';
+import {
+  authenticateRequired,
+  requireStaff,
+  requireStaffRolesOrPermission,
+} from '../../middlewares/auth';
 import { validateBody, validateParams } from '../../middlewares/validate';
 import { asyncHandler } from '../../utils/async-handler';
 import { conflict, notFound } from '../../utils/errors';
@@ -100,7 +104,11 @@ servicesRouter.get(
   })
 );
 
-servicesRouter.use(authenticateRequired, requireStaff, requireStaffRoles('ADMIN', 'OWNER'));
+servicesRouter.use(
+  authenticateRequired,
+  requireStaff,
+  requireStaffRolesOrPermission('ACCESS_SERVICES', 'ADMIN', 'OWNER'),
+);
 
 servicesRouter.get(
   '/',

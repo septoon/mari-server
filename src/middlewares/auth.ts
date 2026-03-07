@@ -98,6 +98,21 @@ export const requireStaffRoles = (...roles: StaffRole[]) => {
   };
 };
 
+export const requireStaffRolesOrPermission = (permissionCode: string, ...roles: StaffRole[]) => {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    if (!req.auth || req.auth.subjectType !== 'STAFF') {
+      return next(unauthorized('Staff authentication required'));
+    }
+    if (req.auth.staffRole && roles.includes(req.auth.staffRole)) {
+      return next();
+    }
+    if (hasPermission(req, permissionCode)) {
+      return next();
+    }
+    return next(forbidden());
+  };
+};
+
 export const hasPermission = (req: Request, permissionCode: string): boolean => {
   if (!req.auth || req.auth.subjectType !== 'STAFF') return false;
   if (req.auth.staffRole === 'OWNER') return true;

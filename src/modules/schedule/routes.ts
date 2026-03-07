@@ -3,7 +3,11 @@ import dayjs from 'dayjs';
 import { z } from 'zod';
 
 import { prisma } from '../../db/prisma';
-import { authenticateRequired, requireStaff, requireStaffRoles } from '../../middlewares/auth';
+import {
+  authenticateRequired,
+  requireStaff,
+  requireStaffRolesOrPermission,
+} from '../../middlewares/auth';
 import { validateBody, validateParams, validateQuery } from '../../middlewares/validate';
 import { asyncHandler } from '../../utils/async-handler';
 import { badRequest, notFound } from '../../utils/errors';
@@ -138,7 +142,7 @@ scheduleRouter.get(
   '/staff/:staffId/working-hours',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('ACCESS_SCHEDULE', 'ADMIN', 'OWNER'),
   validateParams(staffParamSchema),
   validateQuery(workingHoursRangeQuerySchema),
   asyncHandler(async (req, res) => {
@@ -201,7 +205,7 @@ scheduleRouter.put(
   '/staff/:staffId/working-hours',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('ACCESS_SCHEDULE', 'ADMIN', 'OWNER'),
   validateParams(staffParamSchema),
   validateBody(workingHoursSchema),
   asyncHandler(async (req, res) => {
@@ -246,7 +250,7 @@ scheduleRouter.get(
   '/staff/:staffId/time-off',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('ACCESS_SCHEDULE', 'ADMIN', 'OWNER'),
   validateParams(staffParamSchema),
   validateQuery(rangeQuerySchema),
   asyncHandler(async (req, res) => {
@@ -287,7 +291,7 @@ scheduleRouter.post(
   '/staff/:staffId/time-off',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('ACCESS_SCHEDULE', 'ADMIN', 'OWNER'),
   validateParams(staffParamSchema),
   validateBody(rangeCreateSchema),
   asyncHandler(async (req, res) => {
@@ -327,7 +331,7 @@ scheduleRouter.delete(
   '/time-off/:id',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('ACCESS_SCHEDULE', 'ADMIN', 'OWNER'),
   validateParams(idParamSchema),
   asyncHandler(async (req, res) => {
     const { id } = req.params as z.infer<typeof idParamSchema>;
@@ -340,7 +344,7 @@ scheduleRouter.get(
   '/staff/:staffId/blocks',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('ACCESS_SCHEDULE', 'ADMIN', 'OWNER'),
   validateParams(staffParamSchema),
   validateQuery(rangeQuerySchema),
   asyncHandler(async (req, res) => {
@@ -381,7 +385,7 @@ scheduleRouter.post(
   '/staff/:staffId/blocks',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('ACCESS_SCHEDULE', 'ADMIN', 'OWNER'),
   validateParams(staffParamSchema),
   validateBody(rangeCreateSchema),
   asyncHandler(async (req, res) => {
@@ -421,7 +425,7 @@ scheduleRouter.delete(
   '/blocks/:id',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('ACCESS_SCHEDULE', 'ADMIN', 'OWNER'),
   validateParams(idParamSchema),
   asyncHandler(async (req, res) => {
     const { id } = req.params as z.infer<typeof idParamSchema>;

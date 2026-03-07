@@ -3,7 +3,12 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import { prisma } from '../../db/prisma';
-import { authenticateRequired, requirePermission, requireStaff, requireStaffRoles } from '../../middlewares/auth';
+import {
+  authenticateRequired,
+  requirePermission,
+  requireStaff,
+  requireStaffRolesOrPermission,
+} from '../../middlewares/auth';
 import { validateBody, validateParams, validateQuery } from '../../middlewares/validate';
 import { asyncHandler } from '../../utils/async-handler';
 import { badRequest, notFound } from '../../utils/errors';
@@ -152,7 +157,7 @@ clientsRouter.get(
   '/',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('ACCESS_CLIENTS', 'ADMIN', 'OWNER'),
   validateQuery(listClientsQuerySchema),
   asyncHandler(async (req, res) => {
     const query = req.validatedQuery as z.infer<typeof listClientsQuerySchema>;
@@ -224,7 +229,7 @@ clientsRouter.get(
   '/:id',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('ACCESS_CLIENTS', 'ADMIN', 'OWNER'),
   validateParams(clientIdParamSchema),
   asyncHandler(async (req, res) => {
     const { id } = req.params as z.infer<typeof clientIdParamSchema>;
@@ -416,7 +421,7 @@ clientsRouter.post(
   '/phone/normalize',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('ACCESS_CLIENTS', 'ADMIN', 'OWNER'),
   validateBody(z.object({ phone: z.string().min(1) })),
   asyncHandler(async (req, res) => {
     const body = req.body as { phone: string };

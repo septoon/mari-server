@@ -8,6 +8,7 @@ import { normalizePhone10, toPhoneE164 } from '../../utils/phone';
 import { validatePin, verifySecret } from '../../utils/password';
 import { ok } from '../../utils/response';
 import { validateBody } from '../../middlewares/validate';
+import { authenticateRequired, requireStaff } from '../../middlewares/auth';
 import { createSession, revokeByRefreshToken, rotateRefresh } from './service';
 
 const loginSchema = z.object({
@@ -31,7 +32,17 @@ staffAuthRouter.post(
     validatePin(body.pin);
     const phone10 = normalizePhone10(body.phone);
 
-    const staff = await prisma.staff.findUnique({ where: { phone10 } });
+    const staff = await prisma.staff.findUnique({
+      where: { phone10 },
+      include: {
+        permissions: {
+          where: {
+            OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+          },
+          include: { permission: true },
+        },
+      },
+    });
     if (!staff || !staff.pinHash || !staff.isActive || staff.firedAt) {
       throw unauthorized('Invalid credentials');
     }
@@ -49,7 +60,8 @@ staffAuthRouter.post(
         name: staff.name,
         role: staff.role,
         phoneE164: staff.phoneE164 ?? toPhoneE164(phone10),
-        email: staff.email
+        email: staff.email,
+        permissions: staff.permissions.map((row) => row.permission.code),
       },
       tokens
     });
@@ -67,7 +79,15 @@ staffAuthRouter.post(
     }
 
     const staff = await prisma.staff.findUnique({
-      where: { id: refreshed.subjectId }
+      where: { id: refreshed.subjectId },
+      include: {
+        permissions: {
+          where: {
+            OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+          },
+          include: { permission: true },
+        },
+      },
     });
     if (!staff || !staff.isActive || staff.firedAt) {
       throw unauthorized('Staff account is not active');
@@ -79,9 +99,42 @@ staffAuthRouter.post(
         name: staff.name,
         role: staff.role,
         phoneE164: staff.phoneE164,
-        email: staff.email
+        email: staff.email,
+        permissions: staff.permissions.map((row) => row.permission.code),
       },
       tokens: refreshed.tokens
+    });
+  })
+);
+
+staffAuthRouter.get(
+  '/me',
+  authenticateRequired,
+  requireStaff,
+  asyncHandler(async (req, res) => {
+    const staff = await prisma.staff.findUnique({
+      where: { id: req.auth!.subjectId },
+      include: {
+        permissions: {
+          where: {
+            OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+          },
+          include: { permission: true },
+        },
+      },
+    });
+    if (!staff || !staff.isActive || staff.firedAt) {
+      throw unauthorized('Staff account is not active');
+    }
+    return ok(res, {
+      staff: {
+        id: staff.id,
+        name: staff.name,
+        role: staff.role,
+        phoneE164: staff.phoneE164,
+        email: staff.email,
+        permissions: staff.permissions.map((row) => row.permission.code),
+      },
     });
   })
 );

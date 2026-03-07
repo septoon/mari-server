@@ -4,7 +4,12 @@ import { z } from 'zod';
 
 import { env } from '../../config/env';
 import { prisma } from '../../db/prisma';
-import { authenticateRequired, requireStaff, requireStaffRoles } from '../../middlewares/auth';
+import {
+  authenticateRequired,
+  requireStaff,
+  requireStaffRoles,
+  requireStaffRolesOrPermission,
+} from '../../middlewares/auth';
 import { validateBody, validateParams, validateQuery } from '../../middlewares/validate';
 import { asyncHandler } from '../../utils/async-handler';
 import { hashToken, randomToken, sha1 } from '../../utils/crypto';
@@ -15,6 +20,10 @@ import { hashSecret, validatePin } from '../../utils/password';
 import { ok } from '../../utils/response';
 import { parseDateOnlyToUtc } from '../../utils/time';
 import { createSession, revokeAllSubjectSessions } from '../auth/service';
+import {
+  STAFF_PERMISSION_CATALOG,
+  STAFF_PERMISSION_DESCRIPTION_BY_CODE,
+} from './permissions';
 
 const inviteSchema = z.object({
   phone: z.string().min(1),
@@ -167,7 +176,7 @@ staffRouter.get(
   '/',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('ACCESS_STAFF', 'ADMIN', 'OWNER'),
   validateQuery(staffListQuerySchema),
   asyncHandler(async (req, res) => {
     const query = req.validatedQuery as z.infer<typeof staffListQuerySchema>;
@@ -269,7 +278,7 @@ staffRouter.post(
   '/invite',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('ACCESS_STAFF', 'ADMIN', 'OWNER'),
   validateBody(inviteSchema),
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof inviteSchema>;
@@ -534,7 +543,7 @@ staffRouter.patch(
   '/:id/contact',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('ACCESS_STAFF', 'ADMIN', 'OWNER'),
   validateParams(idParamSchema),
   validateBody(contactUpdateSchema),
   asyncHandler(async (req, res) => {
@@ -595,7 +604,7 @@ staffRouter.get(
   '/:id/services',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('ACCESS_STAFF', 'ADMIN', 'OWNER'),
   validateParams(idParamSchema),
   asyncHandler(async (req, res) => {
     const { id } = req.params as z.infer<typeof idParamSchema>;
@@ -631,7 +640,7 @@ staffRouter.put(
   '/:id/services',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('ACCESS_STAFF', 'ADMIN', 'OWNER'),
   validateParams(idParamSchema),
   validateBody(serviceAssignmentsSchema),
   asyncHandler(async (req, res) => {
@@ -727,6 +736,50 @@ staffRouter.patch(
   })
 );
 
+staffRouter.get(
+  '/permissions/catalog',
+  authenticateRequired,
+  requireStaff,
+  requireStaffRolesOrPermission('ACCESS_STAFF', 'ADMIN', 'OWNER'),
+  asyncHandler(async (_req, res) => {
+    return ok(res, { items: STAFF_PERMISSION_CATALOG });
+  })
+);
+
+staffRouter.get(
+  '/:id/permissions',
+  authenticateRequired,
+  requireStaff,
+  requireStaffRolesOrPermission('ACCESS_STAFF', 'ADMIN', 'OWNER'),
+  validateParams(idParamSchema),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params as z.infer<typeof idParamSchema>;
+    const staff = await prisma.staff.findUnique({
+      where: { id },
+      include: {
+        permissions: {
+          where: {
+            OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+          },
+          include: { permission: true },
+        },
+      },
+    });
+    if (!staff) {
+      throw notFound('Staff not found');
+    }
+
+    return ok(res, {
+      staffId: id,
+      items: staff.permissions.map((row) => ({
+        code: row.permission.code,
+        description: row.permission.description,
+        expiresAt: row.expiresAt,
+      })),
+    });
+  }),
+);
+
 staffRouter.post(
   '/:id/permissions',
   authenticateRequired,
@@ -745,10 +798,12 @@ staffRouter.post(
 
     const permission = await prisma.permission.upsert({
       where: { code: body.code },
-      update: {},
+      update: {
+        description: STAFF_PERMISSION_DESCRIPTION_BY_CODE.get(body.code) ?? body.code
+      },
       create: {
         code: body.code,
-        description: body.code
+        description: STAFF_PERMISSION_DESCRIPTION_BY_CODE.get(body.code) ?? body.code
       }
     });
 

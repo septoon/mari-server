@@ -3,7 +3,12 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import { prisma } from '../../db/prisma';
-import { authenticateRequired, canViewFinancial, requireStaff, requireStaffRoles } from '../../middlewares/auth';
+import {
+  authenticateRequired,
+  canViewFinancial,
+  requireStaff,
+  requireStaffRolesOrPermission,
+} from '../../middlewares/auth';
 import { validateQuery } from '../../middlewares/validate';
 import { asyncHandler } from '../../utils/async-handler';
 import { mskDayBoundsUtc, parseDateOnlyToUtc } from '../../utils/time';
@@ -21,7 +26,7 @@ reportsRouter.get(
   '/overview',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requireStaffRolesOrPermission('VIEW_FINANCIAL_STATS', 'ADMIN', 'OWNER'),
   validateQuery(overviewQuerySchema),
   asyncHandler(async (req, res) => {
     const query = req.validatedQuery as z.infer<typeof overviewQuerySchema>;
