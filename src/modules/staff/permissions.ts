@@ -67,6 +67,12 @@ export const STAFF_PERMISSION_CATALOG: StaffPermissionCatalogItem[] = [
     group: 'workspace',
   },
   {
+    code: 'EDIT_SELF_PROFILE',
+    title: 'Свой профиль: редактирование',
+    description: 'Изменение собственного имени, телефона, email и специализации',
+    group: 'workspace',
+  },
+  {
     code: 'VIEW_FINANCIAL_STATS',
     title: 'Аналитика и зарплаты',
     description: 'Просмотр сводной аналитики и финансовых показателей',

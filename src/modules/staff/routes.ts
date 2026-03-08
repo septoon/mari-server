@@ -6,6 +6,7 @@ import { env } from '../../config/env';
 import { prisma } from '../../db/prisma';
 import {
   authenticateRequired,
+  hasPermission,
   requireStaff,
   requireStaffRolesOrPermissions,
   requireStaffRoles,
@@ -544,13 +545,26 @@ staffRouter.patch(
   '/:id/contact',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('EDIT_STAFF', 'OWNER'),
+  requireStaffRolesOrPermissions(['EDIT_STAFF', 'EDIT_SELF_PROFILE'], 'OWNER'),
   validateParams(idParamSchema),
   validateBody(contactUpdateSchema),
   asyncHandler(async (req, res) => {
     const { id } = req.params as z.infer<typeof idParamSchema>;
     const body = req.body as z.infer<typeof contactUpdateSchema>;
     const actor = req.auth!;
+    const isSelfEdit = actor.subjectId === id;
+    const canEditAnyStaff = actor.staffRole === StaffRole.OWNER || hasPermission(req, 'EDIT_STAFF');
+    const canEditOwnProfile =
+      actor.staffRole === StaffRole.OWNER ||
+      (actor.staffRole === StaffRole.ADMIN && hasPermission(req, 'EDIT_SELF_PROFILE'));
+
+    if (isSelfEdit) {
+      if (!canEditOwnProfile && !canEditAnyStaff) {
+        throw forbidden('Not enough permissions to edit own profile');
+      }
+    } else if (!canEditAnyStaff) {
+      throw forbidden('Not enough permissions to edit staff contact');
+    }
 
     const staff = await prisma.staff.findUnique({ where: { id } });
     if (!staff) throw notFound('Staff not found');
