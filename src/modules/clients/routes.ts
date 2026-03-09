@@ -1,4 +1,4 @@
-import { DiscountType } from '@prisma/client';
+import { DiscountType, Prisma } from '@prisma/client';
 import { Router } from 'express';
 import { z } from 'zod';
 
@@ -52,6 +52,24 @@ const upsertLoyaltySchema = z.object({
 const updateDiscountSchema = z.object({
   discount: discountPayloadSchema
 });
+
+const updateClientSchema = z
+  .object({
+    name: z.string().trim().min(1).max(255).optional(),
+    phone: z.string().trim().min(1).optional(),
+    email: z.union([z.string().trim().email(), z.literal(''), z.null()]).optional(),
+    comment: z.union([z.string().trim().max(2000), z.literal(''), z.null()]).optional()
+  })
+  .refine(
+    (value) =>
+      value.name !== undefined ||
+      value.phone !== undefined ||
+      value.email !== undefined ||
+      value.comment !== undefined,
+    {
+      message: 'At least one field is required'
+    }
+  );
 
 const validateDiscountPayload = (payload: z.infer<typeof discountPayloadSchema>) => {
   if (payload.type === 'NONE') {
@@ -130,12 +148,14 @@ const mapClientForAdmin = (client: {
   temporaryDiscountFrom: Date | null;
   temporaryDiscountTo: Date | null;
   category?: { id: string; name: string } | null;
+  comment?: string | null;
 }) => ({
   id: client.id,
   name: client.name,
   phoneE164: client.phoneE164,
   phone10: client.phone10,
   email: client.email ?? null,
+  comment: client.comment ?? null,
   category: client.category ? { id: client.category.id, name: client.category.name } : null,
   discount: {
     permanent: {
@@ -204,6 +224,7 @@ clientsRouter.get(
             phone10: row.phone10,
             phoneE164: row.phoneE164,
             email: row.account?.email ?? null,
+            comment: row.comment,
             category: row.category,
             discountType: row.discountType,
             discountValue: row.discountValue,
@@ -255,6 +276,7 @@ clientsRouter.get(
         phone10: row.phone10,
         phoneE164: row.phoneE164,
         email: row.account?.email ?? null,
+        comment: row.comment,
         category: row.category,
         discountType: row.discountType,
         discountValue: row.discountValue,
@@ -264,6 +286,130 @@ clientsRouter.get(
         temporaryDiscountTo: row.temporaryDiscountTo
       })
     );
+  })
+);
+
+clientsRouter.patch(
+  '/:id',
+  authenticateRequired,
+  requireStaff,
+  requirePermission('EDIT_CLIENTS'),
+  validateParams(clientIdParamSchema),
+  validateBody(updateClientSchema),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params as z.infer<typeof clientIdParamSchema>;
+    const body = req.body as z.infer<typeof updateClientSchema>;
+
+    const existing = await prisma.client.findUnique({
+      where: { id },
+      include: {
+        category: true,
+        account: {
+          select: { email: true }
+        }
+      }
+    });
+    if (!existing) {
+      throw notFound('Client not found');
+    }
+
+    const nextName = body.name === undefined ? undefined : body.name.trim();
+    const nextComment =
+      body.comment === undefined
+        ? undefined
+        : body.comment === null || body.comment === ''
+          ? null
+          : body.comment.trim();
+    const nextEmail =
+      body.email === undefined
+        ? undefined
+        : body.email === null || body.email === ''
+          ? null
+          : body.email.trim().toLowerCase();
+
+    const updatePayload: {
+      name?: string | null;
+      phone10?: string;
+      phoneE164?: string;
+      comment?: string | null;
+    } = {};
+
+    if (nextName !== undefined) {
+      updatePayload.name = nextName || null;
+    }
+    if (nextComment !== undefined) {
+      updatePayload.comment = nextComment;
+    }
+    if (body.phone !== undefined) {
+      const normalizedPhone10 = normalizePhone10(body.phone);
+      updatePayload.phone10 = normalizedPhone10;
+      updatePayload.phoneE164 = toPhoneE164(normalizedPhone10);
+    }
+
+    try {
+      const updated = await prisma.$transaction(async (tx) => {
+        if (nextEmail !== undefined) {
+          const account = await tx.clientAccount.findUnique({
+            where: { clientId: id },
+            select: { clientId: true }
+          });
+          if (account) {
+            await tx.clientAccount.update({
+              where: { clientId: id },
+              data: { email: nextEmail }
+            });
+          } else if (nextEmail) {
+            throw badRequest('Client has no account to store email');
+          }
+        }
+
+        if (Object.keys(updatePayload).length > 0) {
+          return tx.client.update({
+            where: { id },
+            data: updatePayload,
+            include: {
+              category: true,
+              account: {
+                select: { email: true }
+              }
+            }
+          });
+        }
+
+        return tx.client.findUniqueOrThrow({
+          where: { id },
+          include: {
+            category: true,
+            account: {
+              select: { email: true }
+            }
+          }
+        });
+      });
+
+      return ok(res, {
+        client: mapClientForAdmin({
+          id: updated.id,
+          name: updated.name,
+          phone10: updated.phone10,
+          phoneE164: updated.phoneE164,
+          email: updated.account?.email ?? null,
+          comment: updated.comment,
+          category: updated.category,
+          discountType: updated.discountType,
+          discountValue: updated.discountValue,
+          temporaryDiscountType: updated.temporaryDiscountType,
+          temporaryDiscountValue: updated.temporaryDiscountValue,
+          temporaryDiscountFrom: updated.temporaryDiscountFrom,
+          temporaryDiscountTo: updated.temporaryDiscountTo
+        })
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw badRequest('Phone or email already in use');
+      }
+      throw error;
+    }
   })
 );
 
@@ -292,6 +438,7 @@ clientsRouter.patch(
         name: updated.name,
         phone10: updated.phone10,
         phoneE164: updated.phoneE164,
+        comment: updated.comment,
         category: updated.category,
         discountType: updated.discountType,
         discountValue: updated.discountValue,
@@ -363,6 +510,7 @@ clientsRouter.get(
             phone10: row.phone10,
             phoneE164: row.phoneE164,
             email: row.account?.email ?? null,
+            comment: row.comment,
             category: row.category,
             discountType: row.discountType,
             discountValue: row.discountValue,
@@ -405,6 +553,7 @@ clientsRouter.post(
           name: updated.name,
           phone10: updated.phone10,
           phoneE164: updated.phoneE164,
+          comment: updated.comment,
           category: updated.category,
           discountType: updated.discountType,
           discountValue: updated.discountValue,

@@ -70,6 +70,10 @@ const contactUpdateSchema = z.object({
   positionName: z.string().min(1).optional()
 });
 
+const avatarUpdateSchema = z.object({
+  photoAssetId: z.string().uuid().nullable()
+});
+
 const serviceAssignmentsSchema = z.object({
   serviceIds: z.array(z.string().uuid()).max(500)
 });
@@ -140,6 +144,7 @@ const toMediaPublicUrl = (urlPath: string): string => {
 const resolveStaffAvatarUrl = (row: {
   specialistProfile: {
     photoDraft: {
+      id: string;
       originalPath: string;
       variants: Array<{
         width: number;
@@ -148,6 +153,7 @@ const resolveStaffAvatarUrl = (row: {
       }>;
     } | null;
     photoPublished: {
+      id: string;
       originalPath: string;
       variants: Array<{
         width: number;
@@ -170,6 +176,15 @@ const resolveStaffAvatarUrl = (row: {
     return toMediaPublicUrl(toMediaUrlPath(preferred.path));
   }
   return toMediaPublicUrl(toMediaUrlPath(asset.originalPath));
+};
+
+const resolveStaffAvatarAssetId = (row: {
+  specialistProfile: {
+    photoDraft: { id: string } | null;
+    photoPublished: { id: string } | null;
+  } | null;
+}): string | null => {
+  return row.specialistProfile?.photoDraft?.id ?? row.specialistProfile?.photoPublished?.id ?? null;
 };
 
 export const staffRouter = Router();
@@ -255,6 +270,7 @@ staffRouter.get(
           phoneE164: row.phoneE164,
           email: row.email,
           avatarUrl: resolveStaffAvatarUrl(row),
+          avatarAssetId: resolveStaffAvatarAssetId(row),
           isActive: row.isActive,
           hiredAt: row.hiredAt,
           firedAt: row.firedAt,
@@ -615,6 +631,146 @@ staffRouter.patch(
   })
 );
 
+staffRouter.patch(
+  '/:id/avatar',
+  authenticateRequired,
+  requireStaff,
+  requireStaffRolesOrPermissions(['EDIT_STAFF', 'EDIT_SELF_PROFILE'], 'OWNER'),
+  validateParams(idParamSchema),
+  validateBody(avatarUpdateSchema),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params as z.infer<typeof idParamSchema>;
+    const body = req.body as z.infer<typeof avatarUpdateSchema>;
+    const actor = req.auth!;
+    const isSelfEdit = actor.subjectId === id;
+    const canEditAnyStaff = actor.staffRole === StaffRole.OWNER || hasPermission(req, 'EDIT_STAFF');
+    const canEditOwnProfile =
+      actor.staffRole === StaffRole.OWNER ||
+      (actor.staffRole === StaffRole.ADMIN && hasPermission(req, 'EDIT_SELF_PROFILE'));
+
+    if (isSelfEdit) {
+      if (!canEditOwnProfile && !canEditAnyStaff) {
+        throw forbidden('Not enough permissions to edit own profile avatar');
+      }
+    } else if (!canEditAnyStaff) {
+      throw forbidden('Not enough permissions to edit staff avatar');
+    }
+
+    const staff = await prisma.staff.findUnique({ where: { id } });
+    if (!staff) throw notFound('Staff not found');
+    if (staff.role === StaffRole.OWNER && actor.staffRole !== StaffRole.OWNER) {
+      throw forbidden('ADMIN cannot edit OWNER (Владелец)');
+    }
+
+    if (body.photoAssetId) {
+      const mediaAsset = await prisma.mediaAsset.findUnique({
+        where: { id: body.photoAssetId },
+        select: { id: true }
+      });
+      if (!mediaAsset) {
+        throw notFound('Media asset not found');
+      }
+    }
+
+    const profile = await prisma.$transaction(async (tx) => {
+      const previousProfile = await tx.clientSpecialistProfile.findUnique({
+        where: { staffId: id },
+        select: {
+          photoAssetIdDraft: true,
+          photoAssetIdPublished: true
+        }
+      });
+
+      await tx.clientSpecialistProfile.upsert({
+        where: { staffId: id },
+        update: {
+          photoAssetIdDraft: body.photoAssetId,
+          ...(body.photoAssetId === null ? { photoAssetIdPublished: null } : {}),
+          updatedByStaffId: actor.subjectId
+        },
+        create: {
+          staffId: id,
+          photoAssetIdDraft: body.photoAssetId,
+          updatedByStaffId: actor.subjectId
+        }
+      });
+
+      await tx.mediaUsage.deleteMany({
+        where: {
+          usageType: 'CLIENT_SPECIALIST_PROFILE',
+          entityId: id,
+          fieldPath: 'photo'
+        }
+      });
+
+      if (body.photoAssetId) {
+        await tx.mediaUsage.create({
+          data: {
+            assetId: body.photoAssetId,
+            usageType: 'CLIENT_SPECIALIST_PROFILE',
+            entityId: id,
+            fieldPath: 'photo',
+            note: 'Staff avatar',
+            createdByStaffId: actor.subjectId
+          }
+        });
+      }
+
+      const savedProfile = await tx.clientSpecialistProfile.findUnique({
+        where: { staffId: id },
+        include: {
+          photoDraft: {
+            include: {
+              variants: {
+                select: {
+                  width: true,
+                  path: true,
+                  urlPath: true
+                }
+              }
+            }
+          },
+          photoPublished: {
+            include: {
+              variants: {
+                select: {
+                  width: true,
+                  path: true,
+                  urlPath: true
+                }
+              }
+            }
+          }
+        }
+      });
+
+      return {
+        previousAssetId: previousProfile?.photoAssetIdDraft ?? previousProfile?.photoAssetIdPublished ?? null,
+        savedProfile
+      };
+    });
+
+    const avatarUrl = profile.savedProfile
+      ? resolveStaffAvatarUrl({
+          specialistProfile: {
+            photoDraft: profile.savedProfile.photoDraft,
+            photoPublished: profile.savedProfile.photoPublished
+          }
+        })
+      : null;
+
+    return ok(res, {
+      staffId: id,
+      avatarUrl,
+      avatarAssetId: body.photoAssetId ?? null,
+      previousAvatarAssetId:
+        profile.previousAssetId && profile.previousAssetId !== body.photoAssetId
+          ? profile.previousAssetId
+          : null
+    });
+  })
+);
+
 staffRouter.get(
   '/:id/services',
   authenticateRequired,
@@ -718,7 +874,7 @@ staffRouter.patch(
   '/:id/role',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('OWNER'),
+  requireStaffRolesOrPermission('EDIT_STAFF', 'OWNER'),
   validateParams(idParamSchema),
   validateBody(roleUpdateSchema),
   asyncHandler(async (req, res) => {
