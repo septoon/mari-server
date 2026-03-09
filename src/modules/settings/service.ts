@@ -8,7 +8,8 @@ export const getOrCreateAppConfig = async () => {
     update: {},
     create: {
       singleton: APP_CONFIG_SINGLETON,
-      clientCancelMinNoticeMinutes: 120
+      clientCancelMinNoticeMinutes: 120,
+      privacyPolicy: ''
     }
   });
 };
@@ -19,7 +20,20 @@ export const updateClientCancelMinNoticeMinutes = async (minutes: number) => {
     update: { clientCancelMinNoticeMinutes: minutes },
     create: {
       singleton: APP_CONFIG_SINGLETON,
-      clientCancelMinNoticeMinutes: minutes
+      clientCancelMinNoticeMinutes: minutes,
+      privacyPolicy: ''
+    }
+  });
+};
+
+export const updatePrivacyPolicy = async (content: string) => {
+  return prisma.appConfig.upsert({
+    where: { singleton: APP_CONFIG_SINGLETON },
+    update: { privacyPolicy: content },
+    create: {
+      singleton: APP_CONFIG_SINGLETON,
+      clientCancelMinNoticeMinutes: 120,
+      privacyPolicy: content
     }
   });
 };

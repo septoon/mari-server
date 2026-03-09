@@ -1,0 +1,2 @@
+ALTER TABLE "AppConfig"
+ADD COLUMN "privacyPolicy" TEXT NOT NULL DEFAULT '';
