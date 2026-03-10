@@ -630,13 +630,10 @@ export const importServicesFromBuffer = async (
   }
 };
 
-type ImportedServiceRow = {
+type ImportedAppointmentRow = {
   rowNumber: number;
   raw: Record<string, unknown>;
   specialization: string | null;
-  serviceName: string;
-  price: Prisma.Decimal;
-  priceWithDiscount: Prisma.Decimal;
   statusRaw: string | null;
   paidRaw: string | null;
   createdAtRaw: Date | null;
@@ -645,6 +642,29 @@ type ImportedServiceRow = {
   staffName: string;
   clientName: string | null;
   clientPhone: string;
+};
+
+type ImportedServiceRow = {
+  serviceName: string;
+  price: Prisma.Decimal;
+  priceWithDiscount: Prisma.Decimal;
+};
+
+type ImportedAppointmentGroup = {
+  appointment: ImportedAppointmentRow;
+  services: ImportedServiceRow[];
+};
+
+type AppointmentImportContext = {
+  staffName: string | null;
+  specialization: string | null;
+  clientName: string | null;
+  phoneRaw: unknown;
+  visitRaw: unknown;
+  createdAtRawValue: unknown;
+  statusRaw: string | null;
+  paidRaw: string | null;
+  creatorName: string | null;
 };
 
 const mapAppointmentStatus = (raw: string | null): AppointmentStatus => {
@@ -711,22 +731,35 @@ export const importAppointmentsFromBuffer = async (
 
   try {
     const rows = readRows(buffer);
-    const grouped = new Map<string, ImportedServiceRow[]>();
+    const grouped = new Map<string, ImportedAppointmentGroup>();
+    const context: AppointmentImportContext = {
+      staffName: null,
+      specialization: null,
+      clientName: null,
+      phoneRaw: null,
+      visitRaw: null,
+      createdAtRawValue: null,
+      statusRaw: null,
+      paidRaw: null,
+      creatorName: null
+    };
 
     for (let i = 0; i < rows.length; i += 1) {
       const row = rows[i]!;
       const rowNumber = i + 2;
 
       try {
-        const staffName = toStr(valueByAlias(row, ['Сотрудник', 'Имя']));
-        const specialization = toStr(valueByAlias(row, ['Специализация', 'Unnamed:1', 'Unnamed: 1', '__EMPTY']));
-        const clientName = toStr(valueByAlias(row, ['Клиент']));
-        const phoneRaw = valueByAlias(row, ['Телефон', 'Unnamed:3', 'Unnamed: 3', '__EMPTY_1']);
-        const visitRaw = valueByAlias(row, ['Время визита']);
-        const createdAtRawValue = valueByAlias(row, ['Дата', '__EMPTY_3']);
-        const statusRaw = toStr(valueByAlias(row, ['Статус']));
-        const paidRaw = toStr(valueByAlias(row, ['Оплачено полностью']));
-        const creatorName = toStr(valueByAlias(row, ['Создал']));
+        const rawStaffName = toStr(valueByAlias(row, ['Сотрудник', 'Имя']));
+        const rawSpecialization = toStr(
+          valueByAlias(row, ['Специализация', 'Unnamed:1', 'Unnamed: 1', '__EMPTY'])
+        );
+        const rawClientName = toStr(valueByAlias(row, ['Клиент']));
+        const rawPhone = valueByAlias(row, ['Телефон', 'Unnamed:3', 'Unnamed: 3', '__EMPTY_1']);
+        const rawVisit = valueByAlias(row, ['Время визита']);
+        const rawCreatedAt = valueByAlias(row, ['Дата', '__EMPTY_3']);
+        const rawStatus = toStr(valueByAlias(row, ['Статус']));
+        const rawPaid = toStr(valueByAlias(row, ['Оплачено полностью']));
+        const rawCreatorName = toStr(valueByAlias(row, ['Создал']));
         const serviceName =
           toStr(valueByAlias(row, ['Название', 'Unnamed:14', 'Unnamed: 14', '__EMPTY_6'])) ??
           toStr(valueByAlias(row, ['Услуги']));
@@ -737,66 +770,83 @@ export const importAppointmentsFromBuffer = async (
           parseDecimal(
             valueByAlias(row, ['Стоимость с учетом скидки, ₽', 'Unnamed:16', 'Unnamed: 16', '__EMPTY_8'])
           ) ?? price;
-        const phoneText = toStr(phoneRaw);
+        const phoneText = toStr(rawPhone);
 
         const isHeaderRow =
-          ((staffName ?? '').toLowerCase().includes('имя') &&
-            (clientName ?? '').toLowerCase().includes('имя')) ||
-          (specialization ?? '').toLowerCase().includes('специализа') ||
+          ((rawStaffName ?? '').toLowerCase().includes('имя') &&
+            (rawClientName ?? '').toLowerCase().includes('имя')) ||
+          (rawSpecialization ?? '').toLowerCase().includes('специализа') ||
           (serviceName ?? '').toLowerCase().includes('назван') ||
           (phoneText ?? '').toLowerCase().includes('телефон');
 
         if (
           isHeaderRow ||
-          (staffName ?? '').toLowerCase() === 'имя' ||
-          (specialization ?? '').toLowerCase() === 'специализация' ||
+          (rawStaffName ?? '').toLowerCase() === 'имя' ||
+          (rawSpecialization ?? '').toLowerCase() === 'специализация' ||
           (phoneText ?? '').toLowerCase() === 'телефон'
         ) {
           counters.skipped += 1;
           continue;
         }
 
-        if (!staffName || !serviceName || !phoneRaw || !visitRaw) {
+        context.staffName = rawStaffName ?? context.staffName;
+        context.specialization = rawSpecialization ?? context.specialization;
+        context.clientName = rawClientName ?? context.clientName;
+        context.phoneRaw = rawPhone ?? context.phoneRaw;
+        context.visitRaw = rawVisit ?? context.visitRaw;
+        context.createdAtRawValue = rawCreatedAt ?? context.createdAtRawValue;
+        context.statusRaw = rawStatus ?? context.statusRaw;
+        context.paidRaw = rawPaid ?? context.paidRaw;
+        context.creatorName = rawCreatorName ?? context.creatorName;
+
+        if (!context.staffName || !context.phoneRaw || !context.visitRaw) {
           counters.skipped += 1;
           continue;
         }
 
-        const phone10 = normalizePhone10(String(phoneRaw));
-        const visitAt = parseExcelDateTimeMsk(visitRaw);
+        const phone10 = normalizePhone10(String(context.phoneRaw));
+        const visitAt = parseExcelDateTimeMsk(context.visitRaw);
         if (!visitAt) {
           throw new Error('Invalid visit datetime');
         }
-        const createdAtRaw = parseExcelDateTimeMsk(createdAtRawValue);
+        const createdAtRaw = parseExcelDateTimeMsk(context.createdAtRawValue);
 
-        const key = groupKeyForAppointment(staffName, phone10, visitAt, createdAtRaw);
-        const serviceRow: ImportedServiceRow = {
+        const key = groupKeyForAppointment(context.staffName, phone10, visitAt, createdAtRaw);
+        const appointmentRow: ImportedAppointmentRow = {
           rowNumber,
           raw: row,
-          specialization,
-          serviceName,
-          price,
-          priceWithDiscount,
-          statusRaw,
-          paidRaw,
+          specialization: context.specialization,
+          statusRaw: context.statusRaw,
+          paidRaw: context.paidRaw,
           createdAtRaw,
-          creatorName,
+          creatorName: context.creatorName,
           visitAt,
-          staffName,
-          clientName,
+          staffName: context.staffName,
+          clientName: context.clientName,
           clientPhone: phone10
         };
 
-        const list = grouped.get(key) ?? [];
-        list.push(serviceRow);
-        grouped.set(key, list);
+        let group = grouped.get(key);
+        if (!group) {
+          group = { appointment: appointmentRow, services: [] };
+          grouped.set(key, group);
+        }
+
+        if (serviceName) {
+          group.services.push({
+            serviceName,
+            price,
+            priceWithDiscount
+          });
+        }
       } catch (error) {
         counters.errors += 1;
         await addJobError(job.id, rowNumber, row, (error as Error).message);
       }
     }
 
-    for (const rowsInGroup of grouped.values()) {
-      const first = rowsInGroup[0]!;
+    for (const group of grouped.values()) {
+      const first = group.appointment;
 
       try {
         const [staff, client] = await Promise.all([
@@ -823,8 +873,8 @@ export const importAppointmentsFromBuffer = async (
         let finalTotal = zero();
         let totalDurationSec = 0;
 
-        for (let idx = 0; idx < rowsInGroup.length; idx += 1) {
-          const row = rowsInGroup[idx]!;
+        for (let idx = 0; idx < group.services.length; idx += 1) {
+          const row = group.services[idx]!;
           const service = await findServiceByName(row.serviceName);
           const durationSec = service?.durationSec ?? 0;
 
@@ -881,11 +931,15 @@ export const importAppointmentsFromBuffer = async (
               paidAmount,
               createdByType: creatorStaffId ? ActorType.STAFF : ActorType.SYSTEM,
               createdById: creatorStaffId,
-              appointmentServices: {
-                createMany: {
-                  data: serviceSnapshots
-                }
-              }
+              ...(serviceSnapshots.length
+                ? {
+                    appointmentServices: {
+                      createMany: {
+                        data: serviceSnapshots
+                      }
+                    }
+                  }
+                : {})
             }
           });
           counters.created += 1;
@@ -913,17 +967,19 @@ export const importAppointmentsFromBuffer = async (
             });
 
             await tx.appointmentService.deleteMany({ where: { appointmentId: existing.id } });
-            await tx.appointmentService.createMany({
-              data: serviceSnapshots.map((item) => ({
-                appointmentId: existing.id,
-                serviceId: item.serviceId,
-                serviceNameSnapshot: item.serviceNameSnapshot,
-                durationSnapshotSec: item.durationSnapshotSec,
-                priceSnapshot: item.priceSnapshot,
-                priceWithDiscountSnapshot: item.priceWithDiscountSnapshot,
-                sortOrder: item.sortOrder
-              }))
-            });
+            if (serviceSnapshots.length) {
+              await tx.appointmentService.createMany({
+                data: serviceSnapshots.map((item) => ({
+                  appointmentId: existing.id,
+                  serviceId: item.serviceId,
+                  serviceNameSnapshot: item.serviceNameSnapshot,
+                  durationSnapshotSec: item.durationSnapshotSec,
+                  priceSnapshot: item.priceSnapshot,
+                  priceWithDiscountSnapshot: item.priceWithDiscountSnapshot,
+                  sortOrder: item.sortOrder
+                }))
+              });
+            }
           });
           counters.updated += 1;
         }
