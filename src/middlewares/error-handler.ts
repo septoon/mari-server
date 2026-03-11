@@ -27,6 +27,12 @@ export const errorHandler = (
     return fail(res, 500, ERROR_CODES.INTERNAL_ERROR, 'Database error', { code: err.code });
   }
 
+  if (err instanceof Prisma.PrismaClientInitializationError) {
+    return fail(res, 503, ERROR_CODES.DB_UNAVAILABLE, 'Database unavailable', {
+      message: err.message
+    });
+  }
+
   console.error(err);
   return fail(res, 500, ERROR_CODES.INTERNAL_ERROR, 'Internal server error');
 };

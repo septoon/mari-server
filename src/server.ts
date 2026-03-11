@@ -1,6 +1,7 @@
 import express from 'express';
 
 import { env } from './config/env';
+import { prisma } from './db/prisma';
 import { errorHandler, notFoundHandler } from './middlewares/error-handler';
 import { authRouter } from './modules/auth/routes';
 import { appointmentsRouter } from './modules/appointments/routes';
@@ -21,8 +22,13 @@ const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-app.get('/health', (_req, res) => {
-  return ok(res, { status: 'ok', time: new Date().toISOString() });
+app.get('/health', async (_req, res, next) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    return ok(res, { status: 'ok', time: new Date().toISOString(), database: 'ok' });
+  } catch (error) {
+    return next(error);
+  }
 });
 
 app.use(

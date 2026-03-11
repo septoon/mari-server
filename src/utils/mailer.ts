@@ -7,6 +7,7 @@ type SendEmailInput = {
   subject: string;
   text: string;
   html?: string;
+  replyTo?: string;
 };
 
 type SendEmailResult = {
@@ -58,10 +59,14 @@ export const sendEmail = async (input: SendEmailInput): Promise<SendEmailResult>
   const transport = getTransporter();
   const info = await transport.sendMail({
     from: env.SMTP_FROM!,
+    replyTo: input.replyTo ?? env.SMTP_FROM!,
     to: input.to,
     subject: input.subject,
     text: input.text,
-    html: input.html
+    html: input.html,
+    headers: {
+      'X-Auto-Response-Suppress': 'All'
+    }
   });
 
   return {

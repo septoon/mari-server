@@ -1,8 +1,11 @@
+import { DiscountType, Prisma } from '@prisma/client';
 import { Router } from 'express';
 import { z } from 'zod';
 
 import { env } from '../../config/env';
 import { prisma } from '../../db/prisma';
+import { authenticateRequired, requireClient } from '../../middlewares/auth';
+import { toNumber } from '../../utils/money';
 import { asyncHandler } from '../../utils/async-handler';
 import { hashToken, randomToken } from '../../utils/crypto';
 import { conflict, notFound, unauthorized } from '../../utils/errors';
@@ -48,7 +51,100 @@ const passwordResetConfirmSchema = z.object({
 const buildClientResetPasswordLink = (token: string): string =>
   `${env.CLIENT_WEB_BASE_URL}${env.CLIENT_WEB_RESET_PASSWORD_PATH}?token=${token}`;
 
+const mapClientAuthProfile = (payload: {
+  id: string;
+  phoneE164: string;
+  name: string | null;
+  email?: string | null;
+  discountType: DiscountType;
+  discountValue: Prisma.Decimal | null;
+}) => ({
+  id: payload.id,
+  phoneE164: payload.phoneE164,
+  name: payload.name,
+  email: payload.email ?? null,
+  discount: {
+    permanentPercent:
+      payload.discountType === DiscountType.PERCENT && payload.discountValue !== null
+        ? toNumber(payload.discountValue)
+        : null
+  }
+});
+
+const buildClientResetPasswordEmail = (payload: { name?: string | null; resetLink: string }) => {
+  const greeting = `Здравствуйте${payload.name ? `, ${payload.name}` : ''}!`;
+  const text = [
+    greeting,
+    '',
+    'Мы получили запрос на восстановление доступа в личный кабинет Mari.',
+    'Чтобы задать новый пароль, перейдите по ссылке:',
+    payload.resetLink,
+    '',
+    'Ссылка действует 24 часа.',
+    'Если вы не запрашивали восстановление, просто проигнорируйте это письмо.'
+  ].join('\n');
+
+  const html = `
+    <div style="margin:0;padding:24px;background:#f5f1ec;font-family:Arial,Helvetica,sans-serif;color:#20343a;">
+      <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid rgba(12,77,85,.08);border-radius:20px;padding:32px;">
+        <div style="font-size:12px;letter-spacing:.28em;text-transform:uppercase;color:#5f7478;">MARI Beauty Salon</div>
+        <h1 style="margin:16px 0 12px;font-size:28px;line-height:1.1;color:#0c4d55;">Восстановление доступа</h1>
+        <p style="margin:0 0 12px;font-size:16px;line-height:1.7;">${greeting}</p>
+        <p style="margin:0 0 12px;font-size:16px;line-height:1.7;">
+          Мы получили запрос на восстановление доступа в личный кабинет Mari.
+        </p>
+        <p style="margin:0 0 24px;font-size:16px;line-height:1.7;">
+          Чтобы задать новый пароль, нажмите на кнопку ниже.
+        </p>
+        <p style="margin:0 0 24px;">
+          <a href="${payload.resetLink}" style="display:inline-block;padding:14px 22px;border-radius:999px;background:#0c4d55;color:#ffffff;text-decoration:none;font-weight:600;">
+            Задать новый пароль
+          </a>
+        </p>
+        <p style="margin:0 0 10px;font-size:14px;line-height:1.7;color:#5f7478;">
+          Если кнопка не открывается, используйте эту ссылку:
+        </p>
+        <p style="margin:0 0 16px;font-size:14px;line-height:1.7;word-break:break-all;">
+          <a href="${payload.resetLink}" style="color:#0c4d55;">${payload.resetLink}</a>
+        </p>
+        <p style="margin:0;font-size:14px;line-height:1.7;color:#5f7478;">
+          Ссылка действует 24 часа. Если вы не запрашивали восстановление, просто проигнорируйте это письмо.
+        </p>
+      </div>
+    </div>
+  `.trim();
+
+  return { text, html };
+};
+
 export const clientAuthRouter = Router();
+
+clientAuthRouter.get(
+  '/profile',
+  authenticateRequired,
+  requireClient,
+  asyncHandler(async (req, res) => {
+    const client = await prisma.client.findUnique({
+      where: { id: req.auth!.subjectId },
+      include: { account: true }
+    });
+
+    if (!client) {
+      throw unauthorized('Client account not found');
+    }
+
+    return ok(res, {
+      client: mapClientAuthProfile({
+        id: client.id,
+        phoneE164: client.phoneE164,
+        name: client.name,
+        email: client.account?.email ?? null,
+        discountType: client.discountType,
+        discountValue: client.discountValue
+      })
+    });
+  })
+);
 
 clientAuthRouter.post(
   '/register',
@@ -134,12 +230,14 @@ clientAuthRouter.post(
     return ok(
       res,
       {
-        client: {
+        client: mapClientAuthProfile({
           id: client.id,
           phoneE164: client.phoneE164,
           name: client.name,
-          email: client.account?.email
-        },
+          email: client.account?.email,
+          discountType: client.discountType,
+          discountValue: client.discountValue
+        }),
         tokens
       },
       201
@@ -177,17 +275,15 @@ clientAuthRouter.post(
 
       resetLink = buildClientResetPasswordLink(rawToken);
       try {
+        const mail = buildClientResetPasswordEmail({
+          name: account.client.name,
+          resetLink
+        });
         await sendEmail({
           to: account.email,
-          subject: 'Mari Beauty: восстановление пароля',
-          text: [
-            `Здравствуйте${account.client.name ? `, ${account.client.name}` : ''}!`,
-            '',
-            'Для восстановления пароля перейдите по ссылке:',
-            resetLink,
-            '',
-            'Ссылка действует 24 часа.'
-          ].join('\n')
+          subject: 'Восстановление доступа в личный кабинет Mari',
+          text: mail.text,
+          html: mail.html
         });
       } catch (error) {
         console.error('[CLIENT_RESET_PASSWORD_MAIL_ERROR]', { accountId: account.id, error });
@@ -254,12 +350,14 @@ clientAuthRouter.post(
     );
 
     return ok(res, {
-      client: {
+      client: mapClientAuthProfile({
         id: account.client.id,
         phoneE164: account.client.phoneE164,
         name: account.client.name,
-        email: account.email
-      },
+        email: account.email,
+        discountType: account.client.discountType,
+        discountValue: account.client.discountValue
+      }),
       tokens
     });
   })
@@ -300,12 +398,14 @@ clientAuthRouter.post(
     );
 
     return ok(res, {
-      client: {
+      client: mapClientAuthProfile({
         id: client.id,
         phoneE164: client.phoneE164,
         name: client.name,
-        email: account.email
-      },
+        email: account.email,
+        discountType: client.discountType,
+        discountValue: client.discountValue
+      }),
       tokens
     });
   })
@@ -330,12 +430,14 @@ clientAuthRouter.post(
     }
 
     return ok(res, {
-      client: {
+      client: mapClientAuthProfile({
         id: account.client.id,
         phoneE164: account.client.phoneE164,
         name: account.client.name,
-        email: account.email
-      },
+        email: account.email,
+        discountType: account.client.discountType,
+        discountValue: account.client.discountValue
+      }),
       tokens: refreshed.tokens
     });
   })
