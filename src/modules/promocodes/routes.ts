@@ -11,6 +11,7 @@ import { sendEmail } from '../../utils/mailer';
 import { D } from '../../utils/money';
 import { normalizePhone10 } from '../../utils/phone';
 import { ok } from '../../utils/response';
+import { formatDateMsk } from '../../utils/time';
 import {
   generateUniquePromoCode,
   mapPromoPublic,
@@ -88,6 +89,8 @@ const validatePromoPayload = (payload: {
     }
   }
 };
+
+const formatPromoExpiryDate = (date: Date): string => formatDateMsk(date, 'DD.MM.YYYY');
 
 export const promoCodesRouter = Router();
 
@@ -338,7 +341,7 @@ promoCodesRouter.post(
         '',
         `Ваш промокод: ${promo.code}`,
         `Скидка: ${discountText}`,
-        promo.endsAt ? `Действует до: ${promo.endsAt.toISOString()}` : 'Срок действия: без ограничения',
+        promo.endsAt ? `Действует до: ${formatPromoExpiryDate(promo.endsAt)}` : 'Срок действия: без ограничения',
         '',
         'Используйте промокод при создании записи.'
       ].join('\n');

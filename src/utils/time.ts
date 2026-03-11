@@ -49,3 +49,6 @@ export const mskDateToUtcByTime = (dateOnly: string, hhmm: string): Date => {
 export const toIso = (date: Date): string => dayjs(date).toISOString();
 
 export const nowUtc = (): Date => new Date();
+
+export const formatDateMsk = (date: Date, pattern = 'DD.MM.YYYY'): string =>
+  dayjs(date).tz(MSK_TZ).format(pattern);
