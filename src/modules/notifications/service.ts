@@ -13,6 +13,7 @@ import { toNumber } from '../../utils/money';
 import { sendEmail } from '../../utils/mailer';
 import { env } from '../../config/env';
 import { formatDateMsk, MSK_TZ } from '../../utils/time';
+import { NOTIFICATION_ID_SET } from './catalog';
 import { getOrCreateAppConfig, normalizeNotificationSettings } from '../settings/service';
 
 const WORKER_INTERVAL_MS = 60_000;
@@ -29,6 +30,62 @@ let jobsTimer: NodeJS.Timeout | null = null;
 let jobsRunning = false;
 
 type AppointmentMailContext = Awaited<ReturnType<typeof loadAppointmentMailContext>>;
+
+const SUPPORTED_NOTIFICATION_IDS = [
+  'clients.onlineBookingCreated',
+  'clients.journalBookingCreated',
+  'clients.bookingConfirmed',
+  'clients.bookingChanged',
+  'clients.confirmationRequest',
+  'clients.visitReminder',
+  'clients.bookingCancelled',
+  'clients.noShowCancelled',
+  'clients.noShowInvite',
+  'clients.reviewRequestWidget',
+  'clients.reviewRequestJournal',
+  'clients.birthdayGreeting',
+  'clients.newDiscount',
+  'clients.discountExpiring',
+  'clients.repeatVisitInvite',
+  'clients.phoneConfirmationWidget',
+  'clients.onlinePaymentSuccess',
+  'admins.clientBookingCreated',
+  'admins.adminBookingCreated',
+  'admins.widgetBookingRescheduled',
+  'admins.widgetBookingCancelled',
+  'admins.scheduleEndingSoon',
+  'staff.clientBookingCreated',
+  'staff.adminBookingCreated',
+  'staff.bookingRescheduled',
+  'staff.bookingCancelled',
+  'staff.noShowMarked',
+] as const;
+
+type SupportedNotificationId = (typeof SUPPORTED_NOTIFICATION_IDS)[number];
+
+const supportedNotificationIdSet = new Set<string>(SUPPORTED_NOTIFICATION_IDS);
+const missingCatalogNotificationIds = [...NOTIFICATION_ID_SET].filter(
+  (id) => !supportedNotificationIdSet.has(id),
+);
+const extraSupportedNotificationIds = [...supportedNotificationIdSet].filter(
+  (id) => !NOTIFICATION_ID_SET.has(id),
+);
+
+if (missingCatalogNotificationIds.length > 0 || extraSupportedNotificationIds.length > 0) {
+  throw new Error(
+    [
+      'Notification catalog and delivery logic are out of sync.',
+      missingCatalogNotificationIds.length > 0
+        ? `Missing in delivery logic: ${missingCatalogNotificationIds.join(', ')}.`
+        : null,
+      extraSupportedNotificationIds.length > 0
+        ? `Unknown in catalog: ${extraSupportedNotificationIds.join(', ')}.`
+        : null,
+    ]
+      .filter(Boolean)
+      .join(' '),
+  );
+}
 
 const buildHtml = (title: string, lines: string[]) => `
   <div style="margin:0;padding:24px;background:#f5f1ec;font-family:Arial,Helvetica,sans-serif;color:#20343a;">
@@ -53,7 +110,7 @@ const getNotificationConfig = async () => {
   };
 };
 
-const isNotificationEnabled = async (notificationId: string) => {
+const isNotificationEnabled = async (notificationId: SupportedNotificationId) => {
   const config = await getNotificationConfig();
   return {
     enabled: Boolean(config.toggles[notificationId]),
@@ -63,7 +120,7 @@ const isNotificationEnabled = async (notificationId: string) => {
 
 const createDispatch = async (input: {
   dispatchKey: string;
-  notificationId: string;
+  notificationId: SupportedNotificationId;
   recipientEmail: string;
   meta?: Prisma.InputJsonValue;
 }) => {
@@ -78,7 +135,7 @@ const createDispatch = async (input: {
 };
 
 const sendNotificationEmail = async (input: {
-  notificationId: string;
+  notificationId: SupportedNotificationId;
   dispatchKey: string;
   recipientEmail: string | null | undefined;
   subject: string;
@@ -417,7 +474,7 @@ export const notifyOnAppointmentStatusChanged = async (input: {
   }
 
   if (input.nextStatus === AppointmentStatus.ARRIVED) {
-    const notificationId =
+    const notificationId: SupportedNotificationId =
       appointment.createdByType === ActorType.CLIENT
         ? 'clients.reviewRequestWidget'
         : 'clients.reviewRequestJournal';

@@ -62,7 +62,7 @@ export const buildSettingsResponse = (
             title: item.title,
             enabled: toggles[item.id],
             channel: 'email',
-            channelLabel: 'Email',
+            channelLabel: 'Эл. почта',
           })),
         })),
       })),
