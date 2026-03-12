@@ -7,6 +7,7 @@ import {
   authenticateRequired,
   requirePermission,
   requireStaff,
+  requireStaffRolesOrPermissions,
   requireStaffRolesOrPermission,
 } from '../../middlewares/auth';
 import { validateBody, validateParams, validateQuery } from '../../middlewares/validate';
@@ -299,8 +300,7 @@ clientsRouter.post(
   '/:id/avatar',
   authenticateRequired,
   requireStaff,
-  requirePermission('EDIT_CLIENTS'),
-  requirePermission('MANAGE_CLIENT_AVATARS'),
+  requireStaffRolesOrPermissions(['EDIT_CLIENTS', 'MANAGE_CLIENT_AVATARS'], 'OWNER'),
   validateParams(clientIdParamSchema),
   clientAvatarUpload.single('file'),
   asyncHandler(async (req, res) => {
@@ -351,8 +351,7 @@ clientsRouter.delete(
   '/:id/avatar',
   authenticateRequired,
   requireStaff,
-  requirePermission('EDIT_CLIENTS'),
-  requirePermission('MANAGE_CLIENT_AVATARS'),
+  requireStaffRolesOrPermissions(['EDIT_CLIENTS', 'MANAGE_CLIENT_AVATARS'], 'OWNER'),
   validateParams(clientIdParamSchema),
   asyncHandler(async (req, res) => {
     const { id } = req.params as z.infer<typeof clientIdParamSchema>;
