@@ -6,6 +6,11 @@ import { mskDateToUtcByTime, mskDayBoundsUtc, MSK_TZ, parseDateOnlyToUtc } from 
 
 export const SLOT_STEP_MINUTES = 10;
 
+type ScheduleDbClient = Pick<
+  Prisma.TransactionClient,
+  'staffDailySchedule' | 'workingHours' | 'appointment' | 'block' | 'timeOff'
+>;
+
 type Range = {
   startAt: Date;
   endAt: Date;
@@ -55,8 +60,12 @@ const toIntervalsFromJson = (value: Prisma.JsonValue): TimeInterval[] => {
   return deduped;
 };
 
-const loadDailyIntervals = async (staffId: string, date: string): Promise<TimeInterval[] | null> => {
-  const daily = await prisma.staffDailySchedule.findUnique({
+const loadDailyIntervals = async (
+  staffId: string,
+  date: string,
+  db: ScheduleDbClient = prisma
+): Promise<TimeInterval[] | null> => {
+  const daily = await db.staffDailySchedule.findUnique({
     where: {
       staffId_date: {
         staffId,
@@ -72,9 +81,13 @@ const loadDailyIntervals = async (staffId: string, date: string): Promise<TimeIn
   return toIntervalsFromJson(daily.intervals);
 };
 
-const loadWorkingHoursIntervals = async (staffId: string, date: string): Promise<TimeInterval[]> => {
+const loadWorkingHoursIntervals = async (
+  staffId: string,
+  date: string,
+  db: ScheduleDbClient = prisma
+): Promise<TimeInterval[]> => {
   const weekday = dayjs.tz(date, 'YYYY-MM-DD', MSK_TZ).day();
-  const hours = await prisma.workingHours.findMany({
+  const hours = await db.workingHours.findMany({
     where: { staffId, dayOfWeek: weekday },
     orderBy: { startTime: 'asc' }
   });
@@ -85,17 +98,26 @@ const loadWorkingHoursIntervals = async (staffId: string, date: string): Promise
   }));
 };
 
-const loadAvailabilityIntervals = async (staffId: string, date: string): Promise<TimeInterval[]> => {
-  const daily = await loadDailyIntervals(staffId, date);
+const loadAvailabilityIntervals = async (
+  staffId: string,
+  date: string,
+  db: ScheduleDbClient = prisma
+): Promise<TimeInterval[]> => {
+  const daily = await loadDailyIntervals(staffId, date, db);
   if (daily) {
     return daily;
   }
-  return loadWorkingHoursIntervals(staffId, date);
+  return loadWorkingHoursIntervals(staffId, date, db);
 };
 
-const buildBusyRanges = async (staffId: string, dayStart: Date, dayEnd: Date): Promise<Range[]> => {
+const buildBusyRanges = async (
+  staffId: string,
+  dayStart: Date,
+  dayEnd: Date,
+  db: ScheduleDbClient = prisma
+): Promise<Range[]> => {
   const [appointments, blocks, timeOff] = await Promise.all([
-    prisma.appointment.findMany({
+    db.appointment.findMany({
       where: {
         staffId,
         status: { notIn: [AppointmentStatus.CANCELLED, AppointmentStatus.NO_SHOW] },
@@ -103,14 +125,14 @@ const buildBusyRanges = async (staffId: string, dayStart: Date, dayEnd: Date): P
       },
       select: { startAt: true, endAt: true }
     }),
-    prisma.block.findMany({
+    db.block.findMany({
       where: {
         staffId,
         AND: [{ startAt: { lt: dayEnd } }, { endAt: { gt: dayStart } }]
       },
       select: { startAt: true, endAt: true }
     }),
-    prisma.timeOff.findMany({
+    db.timeOff.findMany({
       where: {
         staffId,
         AND: [{ startAt: { lt: dayEnd } }, { endAt: { gt: dayStart } }]
@@ -126,10 +148,11 @@ export const isStaffAvailable = async (
   staffId: string,
   startAt: Date,
   endAt: Date,
-  excludeAppointmentId?: string
+  excludeAppointmentId?: string,
+  db: ScheduleDbClient = prisma
 ): Promise<boolean> => {
   const busy = await Promise.all([
-    prisma.appointment.count({
+    db.appointment.count({
       where: {
         staffId,
         status: { notIn: [AppointmentStatus.CANCELLED, AppointmentStatus.NO_SHOW] },
@@ -137,13 +160,13 @@ export const isStaffAvailable = async (
         AND: [{ startAt: { lt: endAt } }, { endAt: { gt: startAt } }]
       }
     }),
-    prisma.block.count({
+    db.block.count({
       where: {
         staffId,
         AND: [{ startAt: { lt: endAt } }, { endAt: { gt: startAt } }]
       }
     }),
-    prisma.timeOff.count({
+    db.timeOff.count({
       where: {
         staffId,
         AND: [{ startAt: { lt: endAt } }, { endAt: { gt: startAt } }]
@@ -158,9 +181,10 @@ export const fitsWorkingHours = async (
   staffId: string,
   date: string,
   startAt: Date,
-  endAt: Date
+  endAt: Date,
+  db: ScheduleDbClient = prisma
 ): Promise<boolean> => {
-  const intervals = await loadAvailabilityIntervals(staffId, date);
+  const intervals = await loadAvailabilityIntervals(staffId, date, db);
 
   if (intervals.length === 0) return false;
 
@@ -174,13 +198,14 @@ export const fitsWorkingHours = async (
 export const listSlotsForStaff = async (
   staffId: string,
   date: string,
-  durationSec: number
+  durationSec: number,
+  db: ScheduleDbClient = prisma
 ): Promise<Array<{ startAt: Date; endAt: Date }>> => {
   const { start: dayStart, end: dayEnd } = mskDayBoundsUtc(date);
 
   const [intervals, busyRanges] = await Promise.all([
-    loadAvailabilityIntervals(staffId, date),
-    buildBusyRanges(staffId, dayStart, dayEnd)
+    loadAvailabilityIntervals(staffId, date, db),
+    buildBusyRanges(staffId, dayStart, dayEnd, db)
   ]);
 
   if (intervals.length === 0) return [];

@@ -7,6 +7,7 @@ import { appointmentsRouter } from './modules/appointments/routes';
 import { clientsRouter } from './modules/clients/routes';
 import { clientFrontRouter } from './modules/client-front/routes';
 import { exportsRouter } from './modules/exports/routes';
+import { startNotificationJobs } from './modules/notifications/service';
 import { importsRouter } from './modules/imports/routes';
 import { promoCodesRouter } from './modules/promocodes/routes';
 import { reportsRouter } from './modules/reports/routes';
@@ -55,4 +56,5 @@ app.use(errorHandler);
 
 app.listen(env.PORT, () => {
   console.log(`Server started on port ${env.PORT}`);
+  startNotificationJobs();
 });

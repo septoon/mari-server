@@ -43,6 +43,12 @@ export const STAFF_PERMISSION_CATALOG: StaffPermissionCatalogItem[] = [
     group: 'workspace',
   },
   {
+    code: 'MANAGE_CLIENT_AVATARS',
+    title: 'Клиенты: аватарки',
+    description: 'Загрузка, замена и удаление аватарок клиентов',
+    group: 'workspace',
+  },
+  {
     code: 'VIEW_SERVICES',
     title: 'Услуги: просмотр',
     description: 'Просмотр категорий и услуг',

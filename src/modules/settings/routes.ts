@@ -1,31 +1,39 @@
 import { Router } from 'express';
 import { z } from 'zod';
 
-import { authenticateRequired, requirePermission, requireStaff, requireStaffRoles } from '../../middlewares/auth';
+import {
+  authenticateRequired,
+  requirePermission,
+  requireStaff,
+  requireStaffRoles,
+} from '../../middlewares/auth';
 import { validateBody } from '../../middlewares/validate';
 import { asyncHandler } from '../../utils/async-handler';
+import { badRequest } from '../../utils/errors';
 import { ok } from '../../utils/response';
-import { getOrCreateAppConfig, updateClientCancelMinNoticeMinutes, updatePrivacyPolicy } from './service';
+import { NOTIFICATION_ID_SET } from '../notifications/catalog';
+import {
+  buildSettingsResponse,
+  getOrCreateAppConfig,
+  updateClientCancelMinNoticeMinutes,
+  updateNotificationSettings,
+  updatePrivacyPolicy,
+} from './service';
 
 const updateCancelPolicySchema = z.object({
-  minNoticeMinutes: z.coerce.number().int().min(0).max(60 * 24 * 30)
+  minNoticeMinutes: z.coerce.number().int().min(0).max(60 * 24 * 30),
+});
+
+const updateNotificationsSchema = z.object({
+  minNoticeMinutes: z.coerce.number().int().min(1).max(60 * 24 * 30).optional(),
+  toggles: z.record(z.string(), z.boolean()).optional(),
+}).refine((value) => value.minNoticeMinutes !== undefined || value.toggles !== undefined, {
+  message: 'At least one field is required',
 });
 
 const updatePrivacyPolicySchema = z.object({
-  content: z.string().max(100_000)
+  content: z.string().max(100_000),
 });
-
-function mapSettingsResponse(config: Awaited<ReturnType<typeof getOrCreateAppConfig>>) {
-  return {
-    clientCancelMinNoticeMinutes: config.clientCancelMinNoticeMinutes,
-    clientCancelPolicy: {
-      minNoticeMinutes: config.clientCancelMinNoticeMinutes
-    },
-    privacyPolicy: {
-      content: config.privacyPolicy
-    }
-  };
-}
 
 export const settingsRouter = Router();
 
@@ -33,8 +41,17 @@ settingsRouter.get(
   '/public',
   asyncHandler(async (_req, res) => {
     const config = await getOrCreateAppConfig();
-    return ok(res, mapSettingsResponse(config));
-  })
+    const payload = buildSettingsResponse(config);
+    return ok(res, {
+      clientCancelMinNoticeMinutes: payload.clientCancelMinNoticeMinutes,
+      clientCancelPolicy: payload.clientCancelPolicy,
+      notificationMinNoticeMinutes: payload.notificationMinNoticeMinutes,
+      notifications: {
+        minNoticeMinutes: payload.notifications.minNoticeMinutes,
+      },
+      privacyPolicy: payload.privacyPolicy,
+    });
+  }),
 );
 
 settingsRouter.get(
@@ -43,8 +60,8 @@ settingsRouter.get(
   requireStaff,
   asyncHandler(async (_req, res) => {
     const config = await getOrCreateAppConfig();
-    return ok(res, mapSettingsResponse(config));
-  })
+    return ok(res, buildSettingsResponse(config));
+  }),
 );
 
 settingsRouter.patch(
@@ -56,8 +73,33 @@ settingsRouter.patch(
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof updateCancelPolicySchema>;
     const updated = await updateClientCancelMinNoticeMinutes(body.minNoticeMinutes);
-    return ok(res, mapSettingsResponse(updated));
-  })
+    return ok(res, buildSettingsResponse(updated));
+  }),
+);
+
+settingsRouter.patch(
+  '/notifications',
+  authenticateRequired,
+  requireStaff,
+  requireStaffRoles('OWNER'),
+  validateBody(updateNotificationsSchema),
+  asyncHandler(async (req, res) => {
+    const body = req.body as z.infer<typeof updateNotificationsSchema>;
+
+    if (body.toggles) {
+      Object.keys(body.toggles).forEach((key) => {
+        if (!NOTIFICATION_ID_SET.has(key)) {
+          throw badRequest('Unknown notification toggle id', { id: key });
+        }
+      });
+    }
+
+    const updated = await updateNotificationSettings({
+      minNoticeMinutes: body.minNoticeMinutes,
+      toggles: body.toggles,
+    });
+    return ok(res, buildSettingsResponse(updated));
+  }),
 );
 
 settingsRouter.patch(
@@ -69,6 +111,6 @@ settingsRouter.patch(
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof updatePrivacyPolicySchema>;
     const updated = await updatePrivacyPolicy(body.content);
-    return ok(res, mapSettingsResponse(updated));
-  })
+    return ok(res, buildSettingsResponse(updated));
+  }),
 );

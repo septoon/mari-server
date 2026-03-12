@@ -15,6 +15,8 @@ import { badRequest, notFound } from '../../utils/errors';
 import { D, toNumber } from '../../utils/money';
 import { normalizePhone10, toPhoneE164 } from '../../utils/phone';
 import { ok } from '../../utils/response';
+import { notifyOnClientDiscountChanged } from '../notifications/service';
+import { clientAvatarUpload, deleteClientAvatar, resolveClientAvatarUrl, saveClientAvatar } from './avatar';
 import { upsertClientByPhone } from './service';
 
 const listClientsQuerySchema = z.object({
@@ -141,6 +143,7 @@ const mapClientForAdmin = (client: {
   phoneE164: string;
   phone10: string;
   email?: string | null;
+  avatarPath?: string | null;
   discountType: DiscountType;
   discountValue: any;
   temporaryDiscountType: DiscountType;
@@ -155,6 +158,7 @@ const mapClientForAdmin = (client: {
   phoneE164: client.phoneE164,
   phone10: client.phone10,
   email: client.email ?? null,
+  avatarUrl: resolveClientAvatarUrl(client.avatarPath),
   comment: client.comment ?? null,
   category: client.category ? { id: client.category.id, name: client.category.name } : null,
   discount: {
@@ -224,6 +228,7 @@ clientsRouter.get(
             phone10: row.phone10,
             phoneE164: row.phoneE164,
             email: row.account?.email ?? null,
+            avatarPath: row.avatarPath,
             comment: row.comment,
             category: row.category,
             discountType: row.discountType,
@@ -276,6 +281,7 @@ clientsRouter.get(
         phone10: row.phone10,
         phoneE164: row.phoneE164,
         email: row.account?.email ?? null,
+        avatarPath: row.avatarPath,
         comment: row.comment,
         category: row.category,
         discountType: row.discountType,
@@ -286,6 +292,105 @@ clientsRouter.get(
         temporaryDiscountTo: row.temporaryDiscountTo
       })
     );
+  })
+);
+
+clientsRouter.post(
+  '/:id/avatar',
+  authenticateRequired,
+  requireStaff,
+  requirePermission('EDIT_CLIENTS'),
+  requirePermission('MANAGE_CLIENT_AVATARS'),
+  validateParams(clientIdParamSchema),
+  clientAvatarUpload.single('file'),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params as z.infer<typeof clientIdParamSchema>;
+    const file = req.file;
+    if (!file) {
+      throw badRequest('file is required');
+    }
+
+    await saveClientAvatar(id, file);
+
+    const updated = await prisma.client.findUnique({
+      where: { id },
+      include: {
+        category: true,
+        account: {
+          select: { email: true }
+        }
+      }
+    });
+
+    if (!updated) {
+      throw notFound('Client not found');
+    }
+
+    return ok(res, {
+      client: mapClientForAdmin({
+        id: updated.id,
+        name: updated.name,
+        phone10: updated.phone10,
+        phoneE164: updated.phoneE164,
+        email: updated.account?.email ?? null,
+        avatarPath: updated.avatarPath,
+        comment: updated.comment,
+        category: updated.category,
+        discountType: updated.discountType,
+        discountValue: updated.discountValue,
+        temporaryDiscountType: updated.temporaryDiscountType,
+        temporaryDiscountValue: updated.temporaryDiscountValue,
+        temporaryDiscountFrom: updated.temporaryDiscountFrom,
+        temporaryDiscountTo: updated.temporaryDiscountTo
+      })
+    });
+  })
+);
+
+clientsRouter.delete(
+  '/:id/avatar',
+  authenticateRequired,
+  requireStaff,
+  requirePermission('EDIT_CLIENTS'),
+  requirePermission('MANAGE_CLIENT_AVATARS'),
+  validateParams(clientIdParamSchema),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params as z.infer<typeof clientIdParamSchema>;
+
+    await deleteClientAvatar(id);
+
+    const updated = await prisma.client.findUnique({
+      where: { id },
+      include: {
+        category: true,
+        account: {
+          select: { email: true }
+        }
+      }
+    });
+
+    if (!updated) {
+      throw notFound('Client not found');
+    }
+
+    return ok(res, {
+      client: mapClientForAdmin({
+        id: updated.id,
+        name: updated.name,
+        phone10: updated.phone10,
+        phoneE164: updated.phoneE164,
+        email: updated.account?.email ?? null,
+        avatarPath: updated.avatarPath,
+        comment: updated.comment,
+        category: updated.category,
+        discountType: updated.discountType,
+        discountValue: updated.discountValue,
+        temporaryDiscountType: updated.temporaryDiscountType,
+        temporaryDiscountValue: updated.temporaryDiscountValue,
+        temporaryDiscountFrom: updated.temporaryDiscountFrom,
+        temporaryDiscountTo: updated.temporaryDiscountTo
+      })
+    });
   })
 );
 
@@ -394,6 +499,7 @@ clientsRouter.patch(
           phone10: updated.phone10,
           phoneE164: updated.phoneE164,
           email: updated.account?.email ?? null,
+          avatarPath: updated.avatarPath,
           comment: updated.comment,
           category: updated.category,
           discountType: updated.discountType,
@@ -432,12 +538,36 @@ clientsRouter.patch(
 
     const updated = await applyDiscountToClient(id, body.discount);
 
+    await notifyOnClientDiscountChanged({
+      before: {
+        id: existing.id,
+        name: existing.name,
+        discountType: existing.discountType,
+        discountValue: existing.discountValue,
+        temporaryDiscountType: existing.temporaryDiscountType,
+        temporaryDiscountValue: existing.temporaryDiscountValue,
+        temporaryDiscountFrom: existing.temporaryDiscountFrom,
+        temporaryDiscountTo: existing.temporaryDiscountTo,
+      },
+      after: {
+        id: updated.id,
+        name: updated.name,
+        discountType: updated.discountType,
+        discountValue: updated.discountValue,
+        temporaryDiscountType: updated.temporaryDiscountType,
+        temporaryDiscountValue: updated.temporaryDiscountValue,
+        temporaryDiscountFrom: updated.temporaryDiscountFrom,
+        temporaryDiscountTo: updated.temporaryDiscountTo,
+      },
+    });
+
     return ok(res, {
       client: mapClientForAdmin({
         id: updated.id,
         name: updated.name,
         phone10: updated.phone10,
         phoneE164: updated.phoneE164,
+        avatarPath: updated.avatarPath,
         comment: updated.comment,
         category: updated.category,
         discountType: updated.discountType,
@@ -543,7 +673,31 @@ clientsRouter.post(
     const body = req.body as z.infer<typeof upsertLoyaltySchema>;
 
     const client = await upsertClientByPhone(body.phone, body.name);
+    const before = await prisma.client.findUniqueOrThrow({ where: { id: client.id } });
     const updated = await applyDiscountToClient(client.id, body.discount);
+
+    await notifyOnClientDiscountChanged({
+      before: {
+        id: before.id,
+        name: before.name,
+        discountType: before.discountType,
+        discountValue: before.discountValue,
+        temporaryDiscountType: before.temporaryDiscountType,
+        temporaryDiscountValue: before.temporaryDiscountValue,
+        temporaryDiscountFrom: before.temporaryDiscountFrom,
+        temporaryDiscountTo: before.temporaryDiscountTo,
+      },
+      after: {
+        id: updated.id,
+        name: updated.name,
+        discountType: updated.discountType,
+        discountValue: updated.discountValue,
+        temporaryDiscountType: updated.temporaryDiscountType,
+        temporaryDiscountValue: updated.temporaryDiscountValue,
+        temporaryDiscountFrom: updated.temporaryDiscountFrom,
+        temporaryDiscountTo: updated.temporaryDiscountTo,
+      },
+    });
 
     return ok(
       res,
@@ -553,6 +707,7 @@ clientsRouter.post(
           name: updated.name,
           phone10: updated.phone10,
           phoneE164: updated.phoneE164,
+          avatarPath: updated.avatarPath,
           comment: updated.comment,
           category: updated.category,
           discountType: updated.discountType,

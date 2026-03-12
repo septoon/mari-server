@@ -80,6 +80,7 @@ model Client {
   phone10                String       @unique
   phoneE164              String
   name                   String?
+  avatarPath             String?
   gender                 Gender       @default(UNKNOWN)
   birthday               DateTime?
   comment                String?
@@ -233,9 +234,23 @@ model AppConfig {
   id                           String   @id @default(uuid())
   singleton                    String   @unique @default("default")
   clientCancelMinNoticeMinutes Int      @default(120)
+  notificationMinNoticeMinutes Int      @default(120)
+  notificationSettings         Json     @default("{}")
   privacyPolicy                String   @default("") @db.Text
   createdAt                    DateTime @default(now())
   updatedAt                    DateTime @updatedAt
+}
+
+model NotificationDispatch {
+  id             String   @id @default(uuid())
+  dispatchKey    String   @unique
+  notificationId String
+  recipientEmail String
+  meta           Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  @@index([notificationId, createdAt])
+  @@index([recipientEmail])
 }
 
 model ClientAppConfig {

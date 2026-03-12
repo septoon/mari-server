@@ -24,6 +24,11 @@ const idParamSchema = z.object({
   id: z.string().uuid()
 });
 
+const staffDateParamSchema = z.object({
+  staffId: z.string().uuid(),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+});
+
 const rangeQuerySchema = z.object({
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional()
@@ -44,6 +49,17 @@ const workingHoursSchema = z.object({
       })
     )
     .max(200)
+});
+
+const dailyScheduleSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        startTime: z.string().regex(hhmmRegex),
+        endTime: z.string().regex(hhmmRegex)
+      })
+    )
+    .max(50)
 });
 
 const rangeCreateSchema = z.object({
@@ -93,6 +109,9 @@ const readDailyIntervals = (
   return items;
 };
 
+const serializeIntervals = (items: Array<{ startTime: string; endTime: string }>) =>
+  JSON.parse(JSON.stringify(items));
+
 const assertStaffExists = async (staffId: string) => {
   const staff = await prisma.staff.findUnique({ where: { id: staffId } });
   if (!staff) {
@@ -136,6 +155,104 @@ const validateWorkingHours = (items: Array<{ dayOfWeek: number; startTime: strin
   }
 };
 
+const validateIntervals = (items: Array<{ startTime: string; endTime: string }>) => {
+  validateWorkingHours(items.map((item) => ({ dayOfWeek: 0, startTime: item.startTime, endTime: item.endTime })));
+};
+
+const loadIntervalsForDate = async (staffId: string, date: string) => {
+  const dailyRow = await prisma.staffDailySchedule.findUnique({
+    where: {
+      staffId_date: {
+        staffId,
+        date: parseDateOnlyToUtc(date)
+      }
+    }
+  });
+
+  if (dailyRow) {
+    return readDailyIntervals(dailyRow.intervals);
+  }
+
+  const weekday = dayjs.tz(date, 'YYYY-MM-DD', MSK_TZ).day();
+  const weeklyRows = await prisma.workingHours.findMany({
+    where: { staffId, dayOfWeek: weekday },
+    orderBy: { startTime: 'asc' }
+  });
+
+  return weeklyRows.map((item) => ({
+    startTime: item.startTime,
+    endTime: item.endTime
+  }));
+};
+
+const expandScheduleItemsForRange = async (staffId: string, from: string, to: string) => {
+  const fromDate = parseDateOnlyToUtc(from);
+  const toDate = parseDateOnlyToUtc(to);
+  if (toDate < fromDate) {
+    throw badRequest('to must be greater or equal to from');
+  }
+
+  const toExclusive = new Date(toDate.getTime() + 24 * 60 * 60 * 1000);
+  const [weeklyRows, dailyRows] = await Promise.all([
+    prisma.workingHours.findMany({
+      where: { staffId },
+      orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }]
+    }),
+    prisma.staffDailySchedule.findMany({
+      where: {
+        staffId,
+        date: {
+          gte: fromDate,
+          lt: toExclusive
+        }
+      },
+      orderBy: [{ date: 'asc' }]
+    })
+  ]);
+
+  const weeklyByDay = new Map<number, Array<{ startTime: string; endTime: string }>>();
+  weeklyRows.forEach((item) => {
+    const current = weeklyByDay.get(item.dayOfWeek) ?? [];
+    current.push({ startTime: item.startTime, endTime: item.endTime });
+    weeklyByDay.set(item.dayOfWeek, current);
+  });
+
+  const dailyByDate = new Map<string, Array<{ startTime: string; endTime: string }>>();
+  dailyRows.forEach((row) => {
+    const dateKey = dayjs(row.date).tz(MSK_TZ).format('YYYY-MM-DD');
+    dailyByDate.set(dateKey, readDailyIntervals(row.intervals));
+  });
+
+  const items: Array<{
+    id: string;
+    dayOfWeek: number;
+    date: string;
+    startTime: string;
+    endTime: string;
+  }> = [];
+
+  for (
+    let cursor = dayjs.tz(from, 'YYYY-MM-DD', MSK_TZ);
+    !cursor.isAfter(dayjs.tz(to, 'YYYY-MM-DD', MSK_TZ), 'day');
+    cursor = cursor.add(1, 'day')
+  ) {
+    const dateKey = cursor.format('YYYY-MM-DD');
+    const dayOfWeek = cursor.day();
+    const intervals = dailyByDate.get(dateKey) ?? weeklyByDay.get(dayOfWeek) ?? [];
+    intervals.forEach((interval, index) => {
+      items.push({
+        id: `${staffId}:${dateKey}:${index}`,
+        dayOfWeek,
+        date: dateKey,
+        startTime: interval.startTime,
+        endTime: interval.endTime
+      });
+    });
+  }
+
+  return items;
+};
+
 export const scheduleRouter = Router();
 
 scheduleRouter.get(
@@ -150,53 +267,86 @@ scheduleRouter.get(
     const query = req.validatedQuery as z.infer<typeof workingHoursRangeQuerySchema>;
     await assertStaffExists(staffId);
 
+    if (query.from && query.to) {
+      return ok(res, {
+        staffId,
+        items: await expandScheduleItemsForRange(staffId, query.from, query.to)
+      });
+    }
+
     const weeklyItems = await prisma.workingHours.findMany({
       where: { staffId },
       orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }]
     });
 
-    let items = weeklyItems.map((item) => ({
+    const items = weeklyItems.map((item) => ({
       id: item.id,
       dayOfWeek: item.dayOfWeek,
       startTime: item.startTime,
       endTime: item.endTime
     }));
 
-    if (items.length === 0 && query.from && query.to) {
-      const from = parseDateOnlyToUtc(query.from);
-      const to = parseDateOnlyToUtc(query.to);
-      if (to < from) {
-        throw badRequest('to must be greater or equal to from');
-      }
-      const toExclusive = new Date(to.getTime() + 24 * 60 * 60 * 1000);
-
-      const dailyRows = await prisma.staffDailySchedule.findMany({
-        where: {
-          staffId,
-          date: {
-            gte: from,
-            lt: toExclusive
-          }
-        },
-        orderBy: [{ date: 'asc' }]
-      });
-
-      items = dailyRows.flatMap((row) => {
-        const intervals = readDailyIntervals(row.intervals);
-        const dayOfWeek = dayjs(row.date).tz(MSK_TZ).day();
-        return intervals.map((interval, index) => ({
-          id: `${row.id}-${index}`,
-          dayOfWeek,
-          date: row.date.toISOString(),
-          startTime: interval.startTime,
-          endTime: interval.endTime
-        }));
-      });
-    }
-
     return ok(res, {
       staffId,
       items
+    });
+  })
+);
+
+scheduleRouter.get(
+  '/staff/:staffId/daily-schedule/:date',
+  authenticateRequired,
+  requireStaff,
+  requireStaffRolesOrPermission('VIEW_SCHEDULE', 'OWNER'),
+  validateParams(staffDateParamSchema),
+  asyncHandler(async (req, res) => {
+    const { staffId, date } = req.params as z.infer<typeof staffDateParamSchema>;
+    await assertStaffExists(staffId);
+
+    return ok(res, {
+      staffId,
+      date,
+      items: await loadIntervalsForDate(staffId, date)
+    });
+  })
+);
+
+scheduleRouter.put(
+  '/staff/:staffId/daily-schedule/:date',
+  authenticateRequired,
+  requireStaff,
+  requireStaffRolesOrPermission('EDIT_SCHEDULE', 'OWNER'),
+  validateParams(staffDateParamSchema),
+  validateBody(dailyScheduleSchema),
+  asyncHandler(async (req, res) => {
+    const { staffId, date } = req.params as z.infer<typeof staffDateParamSchema>;
+    const body = req.body as z.infer<typeof dailyScheduleSchema>;
+    await assertStaffExists(staffId);
+
+    validateIntervals(body.items);
+
+    const saved = await prisma.staffDailySchedule.upsert({
+      where: {
+        staffId_date: {
+          staffId,
+          date: parseDateOnlyToUtc(date)
+        }
+      },
+      update: {
+        intervals: serializeIntervals(body.items)
+      },
+      create: {
+        staffId,
+        date: parseDateOnlyToUtc(date),
+        intervals: serializeIntervals(body.items)
+      }
+    });
+
+    return ok(res, {
+      staffId,
+      date,
+      id: saved.id,
+      items: readDailyIntervals(saved.intervals)
     });
   })
 );

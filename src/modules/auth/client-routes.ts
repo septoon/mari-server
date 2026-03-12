@@ -8,12 +8,13 @@ import { authenticateRequired, requireClient } from '../../middlewares/auth';
 import { toNumber } from '../../utils/money';
 import { asyncHandler } from '../../utils/async-handler';
 import { hashToken, randomToken } from '../../utils/crypto';
-import { conflict, notFound, unauthorized } from '../../utils/errors';
+import { badRequest, conflict, notFound, unauthorized } from '../../utils/errors';
 import { sendEmail } from '../../utils/mailer';
 import { normalizePhone10, toPhoneE164 } from '../../utils/phone';
 import { hashSecret, validatePassword, verifySecret } from '../../utils/password';
 import { ok } from '../../utils/response';
 import { validateBody } from '../../middlewares/validate';
+import { clientAvatarUpload, deleteClientAvatar, resolveClientAvatarUrl, saveClientAvatar } from '../clients/avatar';
 import { createSession, revokeByRefreshToken, rotateRefresh } from './service';
 
 const registerSchema = z.object({
@@ -56,6 +57,7 @@ const mapClientAuthProfile = (payload: {
   phoneE164: string;
   name: string | null;
   email?: string | null;
+  avatarPath?: string | null;
   discountType: DiscountType;
   discountValue: Prisma.Decimal | null;
 }) => ({
@@ -63,6 +65,7 @@ const mapClientAuthProfile = (payload: {
   phoneE164: payload.phoneE164,
   name: payload.name,
   email: payload.email ?? null,
+  avatarUrl: resolveClientAvatarUrl(payload.avatarPath),
   discount: {
     permanentPercent:
       payload.discountType === DiscountType.PERCENT && payload.discountValue !== null
@@ -139,6 +142,73 @@ clientAuthRouter.get(
         phoneE164: client.phoneE164,
         name: client.name,
         email: client.account?.email ?? null,
+        avatarPath: client.avatarPath,
+        discountType: client.discountType,
+        discountValue: client.discountValue
+      })
+    });
+  })
+);
+
+clientAuthRouter.post(
+  '/avatar',
+  authenticateRequired,
+  requireClient,
+  clientAvatarUpload.single('file'),
+  asyncHandler(async (req, res) => {
+    const file = req.file;
+    if (!file) {
+      throw badRequest('file is required');
+    }
+
+    await saveClientAvatar(req.auth!.subjectId, file);
+
+    const client = await prisma.client.findUnique({
+      where: { id: req.auth!.subjectId },
+      include: { account: true }
+    });
+
+    if (!client) {
+      throw unauthorized('Client account not found');
+    }
+
+    return ok(res, {
+      client: mapClientAuthProfile({
+        id: client.id,
+        phoneE164: client.phoneE164,
+        name: client.name,
+        email: client.account?.email ?? null,
+        avatarPath: client.avatarPath,
+        discountType: client.discountType,
+        discountValue: client.discountValue
+      })
+    });
+  })
+);
+
+clientAuthRouter.delete(
+  '/avatar',
+  authenticateRequired,
+  requireClient,
+  asyncHandler(async (req, res) => {
+    await deleteClientAvatar(req.auth!.subjectId);
+
+    const client = await prisma.client.findUnique({
+      where: { id: req.auth!.subjectId },
+      include: { account: true }
+    });
+
+    if (!client) {
+      throw unauthorized('Client account not found');
+    }
+
+    return ok(res, {
+      client: mapClientAuthProfile({
+        id: client.id,
+        phoneE164: client.phoneE164,
+        name: client.name,
+        email: client.account?.email ?? null,
+        avatarPath: client.avatarPath,
         discountType: client.discountType,
         discountValue: client.discountValue
       })
@@ -235,6 +305,7 @@ clientAuthRouter.post(
           phoneE164: client.phoneE164,
           name: client.name,
           email: client.account?.email,
+          avatarPath: client.avatarPath,
           discountType: client.discountType,
           discountValue: client.discountValue
         }),
@@ -355,6 +426,7 @@ clientAuthRouter.post(
         phoneE164: account.client.phoneE164,
         name: account.client.name,
         email: account.email,
+        avatarPath: account.client.avatarPath,
         discountType: account.client.discountType,
         discountValue: account.client.discountValue
       }),
@@ -403,6 +475,7 @@ clientAuthRouter.post(
         phoneE164: client.phoneE164,
         name: client.name,
         email: account.email,
+        avatarPath: client.avatarPath,
         discountType: client.discountType,
         discountValue: client.discountValue
       }),
@@ -435,6 +508,7 @@ clientAuthRouter.post(
         phoneE164: account.client.phoneE164,
         name: account.client.name,
         email: account.email,
+        avatarPath: account.client.avatarPath,
         discountType: account.client.discountType,
         discountValue: account.client.discountValue
       }),

@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
+import multer from 'multer';
 import { AppError, ERROR_CODES } from '../utils/errors';
 import { fail } from '../utils/response';
 
@@ -30,6 +31,13 @@ export const errorHandler = (
   if (err instanceof Prisma.PrismaClientInitializationError) {
     return fail(res, 503, ERROR_CODES.DB_UNAVAILABLE, 'Database unavailable', {
       message: err.message
+    });
+  }
+
+  if (err instanceof multer.MulterError) {
+    const status = err.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+    return fail(res, status, ERROR_CODES.VALIDATION_ERROR, err.message, {
+      code: err.code
     });
   }
 

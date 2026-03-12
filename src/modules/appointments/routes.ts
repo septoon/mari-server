@@ -3,7 +3,8 @@ import {
   AppointmentStatus,
   DiscountType,
   PaymentMethod,
-  PaymentStatus
+  PaymentStatus,
+  Prisma
 } from '@prisma/client';
 import dayjs from 'dayjs';
 import { Router } from 'express';
@@ -29,6 +30,13 @@ import { MSK_TZ, parseDateOnlyToUtc, todayStartMskUtc } from '../../utils/time';
 import { upsertClientByPhone } from '../clients/service';
 import { validatePromoForClient } from '../promocodes/service';
 import { getOrCreateAppConfig } from '../settings/service';
+import {
+  notifyOnAppointmentCreated,
+  notifyOnAppointmentRescheduled,
+  notifyOnAppointmentStatusChanged,
+  notifyOnClientCancelled,
+  notifyOnPaymentAdded,
+} from '../notifications/service';
 import {
   buildApiAppointmentExternalId,
   calculatePrices,
@@ -198,6 +206,35 @@ const pickStaffCandidatesForReschedule = async (
   return [{ id: current.id, name: current.name }];
 };
 
+const selectAvailableStaff = async (
+  db: Prisma.TransactionClient,
+  candidates: Array<{ id: string; name: string }>,
+  dateMsk: string,
+  startAt: Date,
+  endAt: Date,
+  excludeAppointmentId?: string
+): Promise<{ id: string; name: string } | null> => {
+  for (const candidate of candidates) {
+    const [fits, available] = await Promise.all([
+      fitsWorkingHours(candidate.id, dateMsk, startAt, endAt, db),
+      isStaffAvailable(candidate.id, startAt, endAt, excludeAppointmentId, db)
+    ]);
+    if (fits && available) {
+      return { id: candidate.id, name: candidate.name };
+    }
+  }
+
+  return null;
+};
+
+const mapSlotWriteError = (error: unknown): never => {
+  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') {
+    throw conflictSlot('Selected time just became unavailable');
+  }
+
+  throw error;
+};
+
 export const appointmentsRouter = Router();
 
 appointmentsRouter.get(
@@ -322,22 +359,6 @@ appointmentsRouter.post(
     }
 
     const candidates = await resolveStaffCandidates(body.serviceIds, body.staffId, body.anyStaff);
-    let selectedStaff: { id: string; name: string } | null = null;
-
-    for (const candidate of candidates) {
-      const [fits, available] = await Promise.all([
-        fitsWorkingHours(candidate.id, dateMsk, startAt, endAt),
-        isStaffAvailable(candidate.id, startAt, endAt)
-      ]);
-      if (fits && available) {
-        selectedStaff = { id: candidate.id, name: candidate.name };
-        break;
-      }
-    }
-
-    if (!selectedStaff) {
-      throw conflictSlot('No available staff for selected time');
-    }
 
     const clientBaseDiscount = resolveClientBaseDiscount(client);
 
@@ -358,79 +379,94 @@ appointmentsRouter.post(
     );
 
     const prices = calculatePrices(services, discount);
-    const externalId = buildApiAppointmentExternalId(selectedStaff.id, client.id, startAt, [...body.serviceIds]);
+    const appointment = await (async () => {
+      try {
+        return await prisma.$transaction(
+          async (tx) => {
+            const selectedStaff = await selectAvailableStaff(tx, candidates, dateMsk, startAt, endAt);
+            if (!selectedStaff) {
+              throw conflictSlot('No available staff for selected time');
+            }
 
-    const exists = await prisma.appointment.findUnique({ where: { externalId } });
-    if (exists) {
-      throw conflictSlot('Appointment with same payload already exists');
-    }
+            const externalId = buildApiAppointmentExternalId(selectedStaff.id, client.id, startAt, [...body.serviceIds]);
+            const exists = await tx.appointment.findUnique({ where: { externalId } });
+            if (exists) {
+              throw conflictSlot('Appointment with same payload already exists');
+            }
 
-    const appointment = await prisma.$transaction(async (tx) => {
-      const created = await tx.appointment.create({
-        data: {
-          externalId,
-          clientId: client.id,
-          staffId: selectedStaff.id,
-          startAt,
-          endAt,
-          status: 'PENDING',
-          baseTotalPrice: prices.baseTotal,
-          discountTypeSnapshot: prices.discountTypeSnapshot,
-          discountValueSnapshot: prices.discountValueSnapshot,
-          discountAmountSnapshot: prices.discountAmount,
-          finalTotalPrice: prices.finalTotal,
-          paymentStatus: PaymentStatus.UNPAID,
-          paymentMethod: PaymentMethod.OTHER,
-          paidAmount: zero(),
-          createdByType: req.auth?.subjectType === 'STAFF' ? ActorType.STAFF : ActorType.CLIENT,
-          createdById: req.auth?.subjectType === 'STAFF' ? req.auth.subjectId : client.id
-        }
-      });
+            const created = await tx.appointment.create({
+              data: {
+                externalId,
+                clientId: client.id,
+                staffId: selectedStaff.id,
+                startAt,
+                endAt,
+                status: 'PENDING',
+                baseTotalPrice: prices.baseTotal,
+                discountTypeSnapshot: prices.discountTypeSnapshot,
+                discountValueSnapshot: prices.discountValueSnapshot,
+                discountAmountSnapshot: prices.discountAmount,
+                finalTotalPrice: prices.finalTotal,
+                paymentStatus: PaymentStatus.UNPAID,
+                paymentMethod: PaymentMethod.OTHER,
+                paidAmount: zero(),
+                createdByType: req.auth?.subjectType === 'STAFF' ? ActorType.STAFF : ActorType.CLIENT,
+                createdById: req.auth?.subjectType === 'STAFF' ? req.auth.subjectId : client.id
+              }
+            });
 
-      await tx.appointmentService.createMany({
-        data: services.map((service, index) => ({
-          appointmentId: created.id,
-          serviceId: service.id,
-          serviceNameSnapshot: service.name,
-          durationSnapshotSec: service.durationSec,
-          priceSnapshot: service.price,
-          priceWithDiscountSnapshot: prices.serviceFinalPrices[index]!,
-          sortOrder: index + 1
-        }))
-      });
+            await tx.appointmentService.createMany({
+              data: services.map((service, index) => ({
+                appointmentId: created.id,
+                serviceId: service.id,
+                serviceNameSnapshot: service.name,
+                durationSnapshotSec: service.durationSec,
+                priceSnapshot: service.price,
+                priceWithDiscountSnapshot: prices.serviceFinalPrices[index]!,
+                sortOrder: index + 1
+              }))
+            });
 
-      if (promoToApply && prices.discountAmount.greaterThan(0)) {
-        await tx.promoCodeRedemption.create({
-          data: {
-            promoCodeId: promoToApply.id,
-            clientId: client.id,
-            appointmentId: created.id,
-            discountTypeSnapshot: prices.discountTypeSnapshot,
-            discountValueSnapshot: prices.discountValueSnapshot,
-            discountAmountSnapshot: prices.discountAmount
-          }
-        });
+            if (promoToApply && prices.discountAmount.greaterThan(0)) {
+              await tx.promoCodeRedemption.create({
+                data: {
+                  promoCodeId: promoToApply.id,
+                  clientId: client.id,
+                  appointmentId: created.id,
+                  discountTypeSnapshot: prices.discountTypeSnapshot,
+                  discountValueSnapshot: prices.discountValueSnapshot,
+                  discountAmountSnapshot: prices.discountAmount
+                }
+              });
 
-        await tx.promoCode.update({
-          where: { id: promoToApply.id },
-          data: { usedCount: { increment: 1 } }
-        });
-      }
+              await tx.promoCode.update({
+                where: { id: promoToApply.id },
+                data: { usedCount: { increment: 1 } }
+              });
+            }
 
-      return tx.appointment.findUniqueOrThrow({
-        where: { id: created.id },
-        include: {
-          appointmentServices: {
-            orderBy: { sortOrder: 'asc' }
+            return tx.appointment.findUniqueOrThrow({
+              where: { id: created.id },
+              include: {
+                appointmentServices: {
+                  orderBy: { sortOrder: 'asc' }
+                },
+                staff: true,
+                client: true,
+                promoRedemption: {
+                  include: { promoCode: true }
+                }
+              }
+            });
           },
-          staff: true,
-          client: true,
-          promoRedemption: {
-            include: { promoCode: true }
-          }
-        }
-      });
-    });
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+        );
+      } catch (error) {
+        return mapSlotWriteError(error);
+      }
+    })();
+
+    await notifyOnAppointmentCreated(appointment.id);
 
     return ok(
       res,
@@ -683,6 +719,12 @@ appointmentsRouter.patch(
       include: { client: true, staff: true }
     });
 
+    await notifyOnAppointmentStatusChanged({
+      appointmentId: updated.id,
+      previousStatus: appointment.status,
+      nextStatus: updated.status,
+    });
+
     return ok(res, {
       appointment: {
         id: updated.id,
@@ -761,38 +803,45 @@ appointmentsRouter.patch(
       anyStaff: body.anyStaff
     });
 
-    let selected: { id: string; name: string } | null = null;
-    for (const candidate of candidates) {
-      const [fits, available] = await Promise.all([
-        fitsWorkingHours(candidate.id, dateMsk, startAt, endAt),
-        isStaffAvailable(candidate.id, startAt, endAt, appointment.id)
-      ]);
-      if (fits && available) {
-        selected = { id: candidate.id, name: candidate.name };
-        break;
-      }
-    }
+    const updated = await (async () => {
+      try {
+        return await prisma.$transaction(
+          async (tx) => {
+            const selected = await selectAvailableStaff(tx, candidates, dateMsk, startAt, endAt, appointment.id);
+            if (!selected) {
+              throw conflictSlot('No available staff for selected time');
+            }
 
-    if (!selected) {
-      throw conflictSlot('No available staff for selected time');
-    }
-
-    const updated = await prisma.appointment.update({
-      where: { id: appointment.id },
-      data: {
-        staffId: selected.id,
-        startAt,
-        endAt,
-        status:
-          appointment.status === AppointmentStatus.PENDING || appointment.status === AppointmentStatus.CONFIRMED
-            ? AppointmentStatus.CONFIRMED
-            : appointment.status
-      },
-      include: {
-        staff: true,
-        client: true,
-        appointmentServices: { orderBy: { sortOrder: 'asc' } }
+            return tx.appointment.update({
+              where: { id: appointment.id },
+              data: {
+                staffId: selected.id,
+                startAt,
+                endAt,
+                status:
+                  appointment.status === AppointmentStatus.PENDING || appointment.status === AppointmentStatus.CONFIRMED
+                    ? AppointmentStatus.CONFIRMED
+                    : appointment.status
+              },
+              include: {
+                staff: true,
+                client: true,
+                appointmentServices: { orderBy: { sortOrder: 'asc' } }
+              }
+            });
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+        );
+      } catch (error) {
+        return mapSlotWriteError(error);
       }
+    })();
+
+    await notifyOnAppointmentRescheduled({
+      appointmentId: updated.id,
+      previousStartAt: appointment.startAt,
+      previousEndAt: appointment.endAt,
+      previousStaffName: appointment.staff.name,
     });
 
     return ok(res, {
@@ -869,6 +918,11 @@ appointmentsRouter.post(
       });
 
       return { payment, updatedAppointment };
+    });
+
+    await notifyOnPaymentAdded({
+      appointmentId: appointment.id,
+      method: body.method,
     });
 
     return ok(res, {
@@ -1131,6 +1185,8 @@ appointmentsRouter.post(
       where: { id: appointment.id },
       data: { status: AppointmentStatus.CANCELLED }
     });
+
+    await notifyOnClientCancelled(updated.id);
 
     return ok(res, {
       appointment: {
