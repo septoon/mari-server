@@ -16,6 +16,7 @@ import {
   type PlatformInput
 } from './schemas';
 import { validateClientFrontExtra } from './extra';
+import { migrateLegacyBookingContent } from './legacy-booking-migration';
 
 const CLIENT_APP_CONFIG_SINGLETON = 'default';
 const MEDIA_MIME_WHITELIST: Record<string, Array<'jpeg' | 'png' | 'webp' | 'heic' | 'avif'>> = {
@@ -447,7 +448,8 @@ const buildDraftConfigPayload = (
   },
   currentPlatform: PlatformInput,
   appVersion: string | undefined,
-  at: Date
+  at: Date,
+  resolvedExtra?: Record<string, unknown>
 ) => {
   const featureFlagsRaw = featureFlagsSchema.safeParse(config.featureFlagsDraft);
   const featureFlags = featureFlagsRaw.success ? featureFlagsRaw.data : {};
@@ -495,7 +497,7 @@ const buildDraftConfigPayload = (
     featureFlags,
     featureFlagState,
     contacts,
-    extra: readJsonObject(config.extraDraft)
+    extra: resolvedExtra ?? readJsonObject(config.extraDraft)
   };
 };
 
@@ -513,7 +515,8 @@ const buildPublishedConfigPayload = (
   },
   currentPlatform: PlatformInput,
   appVersion: string | undefined,
-  at: Date
+  at: Date,
+  resolvedExtra?: Record<string, unknown>
 ) => {
   const featureFlagsRaw = featureFlagsSchema.safeParse(config.featureFlagsPublished);
   const featureFlags = featureFlagsRaw.success ? featureFlagsRaw.data : {};
@@ -561,7 +564,7 @@ const buildPublishedConfigPayload = (
     featureFlags,
     featureFlagState,
     contacts,
-    extra: readJsonObject(config.extraPublished)
+    extra: resolvedExtra ?? readJsonObject(config.extraPublished)
   };
 };
 
@@ -628,6 +631,13 @@ export const getDraftClientConfig = async (platform: PlatformInput, appVersion?:
     },
     orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }]
   });
+  const migratedExtra = migrateLegacyBookingContent(
+    readJsonObject(config.extraDraft),
+    blocks.map((block) => ({
+      blockType: block.blockType,
+      payload: block.payload
+    }))
+  );
   const specialists = await listSpecialistCards(prisma, 'DRAFT', {
     includeHidden: false,
     onlyActive: true,
@@ -637,7 +647,7 @@ export const getDraftClientConfig = async (platform: PlatformInput, appVersion?:
   return {
     stage: 'draft',
     version: config.publishedVersion + 1,
-    config: buildDraftConfigPayload(config, platform, appVersion, at),
+    config: buildDraftConfigPayload(config, platform, appVersion, at, migratedExtra),
     blocks: filterBlocksForClient(blocks, platform, appVersion, at),
     specialists
   };
@@ -645,6 +655,21 @@ export const getDraftClientConfig = async (platform: PlatformInput, appVersion?:
 
 export const getDraftClientConfigRaw = async () => {
   const config = await getOrCreateClientAppConfig();
+  const blocks = await prisma.clientContentBlock.findMany({
+    where: {
+      status: ClientContentStatus.DRAFT,
+      releaseId: null
+    },
+    orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+    select: {
+      blockType: true,
+      payload: true
+    }
+  });
+  const migratedExtra = migrateLegacyBookingContent(
+    readJsonObject(config.extraDraft),
+    blocks
+  );
 
   return {
     id: config.id,
@@ -657,7 +682,7 @@ export const getDraftClientConfigRaw = async () => {
     maintenanceMessage: config.maintenanceMessageDraft,
     featureFlags: readJsonObject(config.featureFlagsDraft),
     contacts: readJsonArray(config.contactsDraft),
-    extra: readJsonObject(config.extraDraft),
+    extra: migratedExtra,
     publishedVersion: config.publishedVersion,
     publishedAt: config.publishedAt,
     publishedReleaseId: config.publishedReleaseId
@@ -773,15 +798,23 @@ export const getClientBootstrap = async (platform: PlatformInput, appVersion?: s
     onlyActive: true,
     onlyWithServices: true
   });
-
-  const publishedConfig = buildPublishedConfigPayload(config, platform, appVersion, now);
+  const publishedExtraWithoutBlocks = migrateLegacyBookingContent(
+    readJsonObject(config.extraPublished),
+    []
+  );
 
   if (!config.publishedReleaseId) {
     const etag = createHash('sha256')
       .update(
         JSON.stringify({
           v: config.publishedVersion,
-          c: publishedConfig,
+          c: buildPublishedConfigPayload(
+            config,
+            platform,
+            appVersion,
+            now,
+            publishedExtraWithoutBlocks
+          ),
           b: [],
           s: specialists
         })
@@ -795,7 +828,13 @@ export const getClientBootstrap = async (platform: PlatformInput, appVersion?: s
       payload: {
         version: config.publishedVersion,
         publishedAt: config.publishedAt,
-        config: publishedConfig,
+        config: buildPublishedConfigPayload(
+          config,
+          platform,
+          appVersion,
+          now,
+          publishedExtraWithoutBlocks
+        ),
         blocks: [],
         specialists
       }
@@ -819,6 +858,13 @@ export const getClientBootstrap = async (platform: PlatformInput, appVersion?: s
   }
 
   const blocks = filterBlocksForClient(release.blocks, platform, appVersion, now);
+  const publishedExtra = migrateLegacyBookingContent(
+    readJsonObject(config.extraPublished),
+    release.blocks.map((block) => ({
+      blockType: block.blockType,
+      payload: block.payload
+    }))
+  );
 
   return {
     version: release.version,
@@ -827,7 +873,13 @@ export const getClientBootstrap = async (platform: PlatformInput, appVersion?: s
     payload: {
       version: release.version,
       publishedAt: release.publishedAt,
-      config: publishedConfig,
+      config: buildPublishedConfigPayload(
+        config,
+        platform,
+        appVersion,
+        now,
+        publishedExtra
+      ),
       blocks,
       specialists
     }
@@ -1043,7 +1095,20 @@ export const publishClientFront = async (actorStaffId: string): Promise<PublishR
     });
 
     const nextVersion = (latestRelease?.version ?? 0) + 1;
-    const appConfigSnapshot = buildDraftConfigPayload(config, 'all', undefined, now);
+    const migratedDraftExtra = migrateLegacyBookingContent(
+      readJsonObject(config.extraDraft),
+      draftBlocks.map((block) => ({
+        blockType: block.blockType,
+        payload: block.payload
+      }))
+    );
+    const appConfigSnapshot = buildDraftConfigPayload(
+      config,
+      'all',
+      undefined,
+      now,
+      migratedDraftExtra
+    );
 
     const snapshotPayload = {
       version: nextVersion,
@@ -1147,7 +1212,8 @@ export const publishClientFront = async (actorStaffId: string): Promise<PublishR
         maintenanceMessagePublished: config.maintenanceMessageDraft,
         featureFlagsPublished: valueToJson(config.featureFlagsDraft),
         contactsPublished: valueToJson(config.contactsDraft),
-        extraPublished: valueToJson(config.extraDraft),
+        extraPublished: valueToJson(migratedDraftExtra),
+        extraDraft: valueToJson(migratedDraftExtra),
         publishedVersion: release.version,
         publishedReleaseId: release.id,
         publishedAt: now

@@ -28,6 +28,97 @@ const pageHeroEntrySchema = z.object({
   description: z.string().trim().max(1200).optional()
 });
 
+const bookingPageShortTextSchema = z.string().trim().min(1).max(240);
+const bookingPageLongTextSchema = z.string().trim().min(1).max(3000);
+const bookingPageTemplateTextSchema = z.string().trim().min(1).max(600);
+
+const bookingPageSchema = z.object({
+  heroActions: z
+    .object({
+      phoneLabel: bookingPageShortTextSchema.optional(),
+      servicesLabel: bookingPageShortTextSchema.optional(),
+      contactsLabel: bookingPageShortTextSchema.optional()
+    })
+    .optional(),
+  connectivityNotice: z
+    .object({
+      title: bookingPageTemplateTextSchema.optional(),
+      description: bookingPageLongTextSchema.optional()
+    })
+    .optional(),
+  panel: z
+    .object({
+      eyebrow: bookingPageShortTextSchema.optional(),
+      availabilityBadge: bookingPageShortTextSchema.optional(),
+      title: bookingPageTemplateTextSchema.optional(),
+      description: bookingPageLongTextSchema.optional(),
+      cartEyebrow: bookingPageShortTextSchema.optional(),
+      cartDescription: bookingPageLongTextSchema.optional(),
+      showCatalogLabel: bookingPageShortTextSchema.optional(),
+      hideCatalogLabel: bookingPageShortTextSchema.optional(),
+      cartListLabel: bookingPageShortTextSchema.optional(),
+      cartSummaryLabel: bookingPageShortTextSchema.optional(),
+      searchPlaceholder: bookingPageShortTextSchema.optional(),
+      allCategoryLabel: bookingPageShortTextSchema.optional(),
+      emptyCartMessage: bookingPageLongTextSchema.optional(),
+      emptyCatalogMessage: bookingPageLongTextSchema.optional(),
+      emptySearchMessage: bookingPageLongTextSchema.optional(),
+      resultsHintTemplate: bookingPageTemplateTextSchema.optional()
+    })
+    .optional(),
+  schedule: z
+    .object({
+      title: bookingPageShortTextSchema.optional(),
+      description: bookingPageLongTextSchema.optional(),
+      daysAheadLabel: bookingPageShortTextSchema.optional(),
+      emptySelectionMessage: bookingPageLongTextSchema.optional(),
+      masterLabel: bookingPageShortTextSchema.optional(),
+      anyMasterLabel: bookingPageShortTextSchema.optional(),
+      manualDateLabel: bookingPageShortTextSchema.optional(),
+      dateHintEmpty: bookingPageTemplateTextSchema.optional(),
+      dateHintLoading: bookingPageTemplateTextSchema.optional(),
+      dateHintFirstSlotTemplate: bookingPageTemplateTextSchema.optional(),
+      dateHintSlotsTemplate: bookingPageTemplateTextSchema.optional(),
+      dateHintNoSlots: bookingPageTemplateTextSchema.optional(),
+      slotsTitle: bookingPageShortTextSchema.optional(),
+      slotsDescription: bookingPageLongTextSchema.optional(),
+      slotsEmptyServices: bookingPageLongTextSchema.optional(),
+      slotsEmptyResults: bookingPageLongTextSchema.optional(),
+      noWindowsLabel: bookingPageShortTextSchema.optional()
+    })
+    .optional(),
+  confirmation: z
+    .object({
+      eyebrow: bookingPageShortTextSchema.optional(),
+      title: bookingPageTemplateTextSchema.optional(),
+      authenticatedDescriptionTemplate: bookingPageTemplateTextSchema.optional(),
+      guestDescription: bookingPageLongTextSchema.optional(),
+      loginCalloutDescription: bookingPageLongTextSchema.optional(),
+      loginButtonLabel: bookingPageShortTextSchema.optional(),
+      registerButtonLabel: bookingPageShortTextSchema.optional(),
+      profileLabel: bookingPageShortTextSchema.optional(),
+      discountDescriptionTemplate: bookingPageTemplateTextSchema.optional(),
+      promoLabel: bookingPageShortTextSchema.optional(),
+      promoPlaceholder: bookingPageShortTextSchema.optional(),
+      commentLabel: bookingPageShortTextSchema.optional(),
+      commentPlaceholder: bookingPageShortTextSchema.optional(),
+      summaryTitle: bookingPageShortTextSchema.optional(),
+      summaryServicesLabel: bookingPageShortTextSchema.optional(),
+      summaryTimeLabel: bookingPageShortTextSchema.optional(),
+      summaryPriceLabel: bookingPageShortTextSchema.optional(),
+      summaryServicesEmpty: bookingPageLongTextSchema.optional(),
+      summarySlotEmpty: bookingPageLongTextSchema.optional(),
+      discountSummaryTemplate: bookingPageTemplateTextSchema.optional(),
+      basePriceTemplate: bookingPageTemplateTextSchema.optional(),
+      promoPriorityNotice: bookingPageLongTextSchema.optional(),
+      successTitle: bookingPageTemplateTextSchema.optional(),
+      submitLabel: bookingPageShortTextSchema.optional(),
+      submitLoadingLabel: bookingPageShortTextSchema.optional(),
+      loginForBookingLabel: bookingPageShortTextSchema.optional()
+    })
+    .optional()
+});
+
 const offerItemSchema = z.object({
   slug: z.string().trim().min(1).max(120).regex(/^[a-z0-9-]+$/),
   title: z.string().trim().min(1).max(180),
@@ -68,10 +159,37 @@ const locationProfileSchema = z.object({
   interiorMoments: z.array(locationInteriorMomentSchema).max(50)
 });
 
+const policySectionSchema = z.object({
+  id: z.string().trim().min(1).max(120).regex(/^[a-z0-9-]+$/),
+  title: z.string().trim().min(1).max(240),
+  paragraphs: z.array(z.string().trim().min(1).max(4000)).min(1).max(50)
+});
+
+const policyContentSchema = z.object({
+  eyebrow: z.string().trim().max(160).optional(),
+  title: z.string().trim().max(220).optional(),
+  description: z.string().trim().max(2000).optional(),
+  summaryEyebrow: z.string().trim().max(160).optional(),
+  summaryTitle: z.string().trim().max(220).optional(),
+  operatorLabel: z.string().trim().max(160).optional(),
+  contactLabel: z.string().trim().max(160).optional(),
+  addressLabel: z.string().trim().max(160).optional(),
+  summaryNote: z.string().trim().max(3000).optional(),
+  contactCtaLabel: z.string().trim().max(160).optional(),
+  bookingConsentLabel: z.string().trim().max(600).optional(),
+  accountConsentLabel: z.string().trim().max(600).optional(),
+  cookieBannerTitle: z.string().trim().max(220).optional(),
+  cookieBannerDescription: z.string().trim().max(2000).optional(),
+  cookieBannerAcceptLabel: z.string().trim().max(120).optional(),
+  cookieBannerNecessaryLabel: z.string().trim().max(160).optional(),
+  sections: z.array(policySectionSchema).max(50).optional()
+});
+
 const siteContentSchema = z.object({
   offers: z.array(offerItemSchema).max(200).optional(),
   news: z.array(newsArticleSchema).max(500).optional(),
-  locations: z.array(locationProfileSchema).max(200).optional()
+  locations: z.array(locationProfileSchema).max(200).optional(),
+  policy: policyContentSchema.optional()
 });
 
 const asObjectRecord = (value: unknown): Record<string, unknown> => {
@@ -132,8 +250,20 @@ export const validateClientFrontExtra = (extra: Record<string, unknown>) => {
     if (parsed.data.locations) {
       assertUniqueBy(parsed.data.locations, 'slug', 'siteContent.locations');
     }
+    if (parsed.data.policy?.sections) {
+      assertUniqueBy(parsed.data.policy.sections, 'id', 'siteContent.policy.sections');
+    }
 
     nextExtra.siteContent = parsed.data;
+  }
+
+  if ('bookingPage' in nextExtra) {
+    const parsed = bookingPageSchema.safeParse(nextExtra.bookingPage);
+    if (!parsed.success) {
+      throw badRequest('Invalid bookingPage payload', parsed.error.flatten());
+    }
+
+    nextExtra.bookingPage = parsed.data;
   }
 
   return nextExtra;
