@@ -54,6 +54,14 @@ const slotsQuerySchema = z.object({
   anyStaff: z.union([z.literal('true'), z.literal('false')]).optional()
 });
 
+const slotDaysQuerySchema = z.object({
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  days: z.coerce.number().int().min(1).max(31).default(14),
+  serviceIds: z.string().min(1),
+  staffId: z.string().uuid().optional(),
+  anyStaff: z.union([z.literal('true'), z.literal('false')]).optional()
+});
+
 const createAppointmentSchema = z.object({
   client: z
     .object({
@@ -236,6 +244,66 @@ const mapSlotWriteError = (error: unknown): never => {
 };
 
 export const appointmentsRouter = Router();
+
+appointmentsRouter.get(
+  '/appointments/slot-days',
+  validateQuery(slotDaysQuerySchema),
+  asyncHandler(async (req, res) => {
+    const query = req.validatedQuery as z.infer<typeof slotDaysQuerySchema>;
+    const serviceIds = query.serviceIds
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+
+    const services = await getServicesSnapshot(serviceIds);
+    const durationSec = getDurationSec(services);
+    const candidates = await resolveStaffCandidates(serviceIds, query.staffId, query.anyStaff === 'true');
+    const startDate = dayjs.tz(query.from, 'YYYY-MM-DD', MSK_TZ);
+
+    const items: Array<{
+      date: string;
+      hasSlots: boolean;
+      totalSlots: number;
+      firstSlotAt: string | null;
+    }> = [];
+
+    for (let offset = 0; offset < query.days; offset += 1) {
+      const date = startDate.add(offset, 'day').format('YYYY-MM-DD');
+      const slotGroups = await Promise.all(
+        candidates.map(async (candidate) => listSlotsForStaff(candidate.id, date, durationSec))
+      );
+
+      let totalSlots = 0;
+      let firstSlotAtMs: number | null = null;
+
+      slotGroups.forEach((slots) => {
+        totalSlots += slots.length;
+        const earliestSlot = slots[0]?.startAt;
+        if (earliestSlot) {
+          const earliestSlotMs = earliestSlot.getTime();
+          if (firstSlotAtMs === null || earliestSlotMs < firstSlotAtMs) {
+            firstSlotAtMs = earliestSlotMs;
+          }
+        }
+      });
+
+      items.push({
+        date,
+        hasSlots: totalSlots > 0,
+        totalSlots,
+        firstSlotAt: firstSlotAtMs === null ? null : new Date(firstSlotAtMs).toISOString()
+      });
+    }
+
+    return ok(res, {
+      from: query.from,
+      days: query.days,
+      stepMinutes: SLOT_STEP_MINUTES,
+      durationSec,
+      items
+    });
+  })
+);
 
 appointmentsRouter.get(
   '/appointments/slots',
