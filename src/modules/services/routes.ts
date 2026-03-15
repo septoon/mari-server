@@ -127,6 +127,19 @@ servicesRouter.get(
   })
 );
 
+servicesRouter.get(
+  '/categories',
+  asyncHandler(async (_req, res) => {
+    const items = await prisma.serviceCategory.findMany({
+      orderBy: [{ name: 'asc' }]
+    });
+
+    return ok(res, {
+      items
+    });
+  })
+);
+
 servicesRouter.post(
   '/',
   requirePermission('EDIT_SERVICES'),

@@ -15,6 +15,7 @@ import {
   featureFlagsSchema,
   type PlatformInput
 } from './schemas';
+import { validateClientFrontExtra } from './extra';
 
 const CLIENT_APP_CONFIG_SINGLETON = 'default';
 const MEDIA_MIME_WHITELIST: Record<string, Array<'jpeg' | 'png' | 'webp' | 'heic' | 'avif'>> = {
@@ -848,6 +849,10 @@ export const patchDraftClientConfig = async (payload: DraftConfigPatchInput, act
       throw badRequest('Invalid featureFlags payload', featureFlagsValidation.error.flatten());
     }
     payload.featureFlags = featureFlagsValidation.data;
+  }
+
+  if (payload.extra !== undefined) {
+    payload.extra = validateClientFrontExtra(payload.extra);
   }
 
   const config = await getOrCreateClientAppConfig();
