@@ -31,6 +31,9 @@ const pageHeroEntrySchema = z.object({
 const bookingPageShortTextSchema = z.string().trim().min(1).max(240);
 const bookingPageLongTextSchema = z.string().trim().min(1).max(3000);
 const bookingPageTemplateTextSchema = z.string().trim().min(1).max(600);
+const homePageShortTextSchema = z.string().trim().max(240);
+const homePageTitleTextSchema = z.string().trim().max(400);
+const homePageLongTextSchema = z.string().trim().max(3000);
 
 const bookingPageSchema = z.object({
   heroActions: z
@@ -119,6 +122,68 @@ const bookingPageSchema = z.object({
     .optional()
 });
 
+const homePageHeroSchema = z.object({
+  eyebrow: homePageShortTextSchema.optional(),
+  title: homePageTitleTextSchema.optional(),
+  description: homePageLongTextSchema.optional(),
+  primaryCtaLabel: homePageShortTextSchema.optional(),
+  secondaryCtaLabel: homePageShortTextSchema.optional(),
+  visualLabel: homePageShortTextSchema.optional(),
+  visualTitle: homePageTitleTextSchema.optional(),
+  visualSubtitle: homePageLongTextSchema.optional()
+});
+
+const homePageActionSectionSchema = z.object({
+  eyebrow: homePageShortTextSchema.optional(),
+  title: homePageTitleTextSchema.optional(),
+  description: homePageLongTextSchema.optional(),
+  actionLabel: homePageShortTextSchema.optional()
+});
+
+const homePageValuePillarSchema = z.object({
+  title: homePageShortTextSchema.optional(),
+  text: homePageLongTextSchema.optional()
+});
+
+const homePageValuePillarsSchema = z.object({
+  eyebrow: homePageShortTextSchema.optional(),
+  title: homePageTitleTextSchema.optional(),
+  description: homePageLongTextSchema.optional(),
+  items: z.array(homePageValuePillarSchema).max(12).optional()
+});
+
+const homePageContactsSchema = z.object({
+  eyebrow: homePageShortTextSchema.optional(),
+  title: homePageTitleTextSchema.optional(),
+  description: homePageLongTextSchema.optional(),
+  primaryCtaLabel: homePageShortTextSchema.optional(),
+  secondaryCtaLabel: homePageShortTextSchema.optional()
+});
+
+const homePageHighlightSchema = z.object({
+  title: homePageShortTextSchema.optional(),
+  description: homePageLongTextSchema.optional()
+});
+
+const homePageBottomCtaSchema = z.object({
+  eyebrow: homePageShortTextSchema.optional(),
+  title: homePageTitleTextSchema.optional(),
+  description: homePageLongTextSchema.optional(),
+  primaryCtaLabel: homePageShortTextSchema.optional(),
+  secondaryCtaLabel: homePageShortTextSchema.optional()
+});
+
+const homePageSchema = z.object({
+  hero: homePageHeroSchema.optional(),
+  categories: homePageActionSectionSchema.optional(),
+  valuePillars: homePageValuePillarsSchema.optional(),
+  featuredServices: homePageActionSectionSchema.optional(),
+  featuredSpecialists: homePageActionSectionSchema.optional(),
+  contacts: homePageContactsSchema.optional(),
+  highlights: z.array(homePageHighlightSchema).max(12).optional(),
+  bottomCta: homePageBottomCtaSchema.optional()
+});
+
 const offerItemSchema = z.object({
   slug: z.string().trim().min(1).max(120).regex(/^[a-z0-9-]+$/),
   title: z.string().trim().min(1).max(180),
@@ -186,6 +251,7 @@ const policyContentSchema = z.object({
 });
 
 const siteContentSchema = z.object({
+  homePage: homePageSchema.optional(),
   offers: z.array(offerItemSchema).max(200).optional(),
   news: z.array(newsArticleSchema).max(500).optional(),
   locations: z.array(locationProfileSchema).max(200).optional(),
