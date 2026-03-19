@@ -202,6 +202,7 @@ export const listSlotsForStaff = async (
   db: ScheduleDbClient = prisma
 ): Promise<Array<{ startAt: Date; endAt: Date }>> => {
   const { start: dayStart, end: dayEnd } = mskDayBoundsUtc(date);
+  const now = new Date();
 
   const [intervals, busyRanges] = await Promise.all([
     loadAvailabilityIntervals(staffId, date, db),
@@ -225,6 +226,10 @@ export const listSlotsForStaff = async (
     ) {
       const startAt = new Date(cursorMs);
       const endAt = new Date(cursorMs + durationMs);
+
+      if (startAt <= now) {
+        continue;
+      }
 
       const blocked = busyRanges.some((range) => overlaps(startAt, endAt, range.startAt, range.endAt));
       if (!blocked) {

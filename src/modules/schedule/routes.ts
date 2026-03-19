@@ -43,7 +43,7 @@ const workingHoursSchema = z.object({
   items: z
     .array(
       z.object({
-        dayOfWeek: z.number().int().min(0).max(6),
+        dayOfWeek: z.number().int().min(0).max(7),
         startTime: z.string().regex(hhmmRegex),
         endTime: z.string().regex(hhmmRegex)
       })
@@ -158,6 +158,14 @@ const validateWorkingHours = (items: Array<{ dayOfWeek: number; startTime: strin
 const validateIntervals = (items: Array<{ startTime: string; endTime: string }>) => {
   validateWorkingHours(items.map((item) => ({ dayOfWeek: 0, startTime: item.startTime, endTime: item.endTime })));
 };
+
+const normalizeWorkingHoursItems = (
+  items: Array<{ dayOfWeek: number; startTime: string; endTime: string }>
+) =>
+  items.map((item) => ({
+    ...item,
+    dayOfWeek: item.dayOfWeek === 7 ? 0 : item.dayOfWeek
+  }));
 
 const loadIntervalsForDate = async (staffId: string, date: string) => {
   const dailyRow = await prisma.staffDailySchedule.findUnique({
@@ -363,13 +371,15 @@ scheduleRouter.put(
     const body = req.body as z.infer<typeof workingHoursSchema>;
     await assertStaffExists(staffId);
 
-    validateWorkingHours(body.items);
+    const normalizedItems = normalizeWorkingHoursItems(body.items);
+
+    validateWorkingHours(normalizedItems);
 
     await prisma.$transaction(async (tx) => {
       await tx.workingHours.deleteMany({ where: { staffId } });
-      if (body.items.length > 0) {
+      if (normalizedItems.length > 0) {
         await tx.workingHours.createMany({
-          data: body.items.map((item) => ({
+          data: normalizedItems.map((item) => ({
             staffId,
             dayOfWeek: item.dayOfWeek,
             startTime: item.startTime,
