@@ -40,6 +40,7 @@ import {
 import {
   buildApiAppointmentExternalId,
   calculatePrices,
+  deleteAppointmentsCascade,
   getDurationSec,
   getServicesSnapshot,
   normalizeDiscount,
@@ -747,6 +748,46 @@ appointmentsRouter.get(
         pages: Math.max(1, Math.ceil(total / limit))
       }
     );
+  })
+);
+
+appointmentsRouter.delete(
+  '/appointments/:id',
+  authenticateRequired,
+  requireStaff,
+  requirePermission('EDIT_JOURNAL'),
+  validateParams(idParamSchema),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params as z.infer<typeof idParamSchema>;
+    const actor = req.auth!;
+
+    const appointment = await prisma.appointment.findUnique({
+      where: { id },
+      include: {
+        client: true,
+        staff: true
+      }
+    });
+    if (!appointment) {
+      throw notFound('Appointment not found');
+    }
+
+    if (actor.staffRole === 'MASTER' && appointment.staffId !== actor.subjectId) {
+      throw forbidden('MASTER can delete only own appointments');
+    }
+
+    await prisma.$transaction(async (tx) => {
+      const deletedCount = await deleteAppointmentsCascade(tx, [appointment.id]);
+      if (deletedCount === 0) {
+        throw notFound('Appointment not found');
+      }
+    });
+
+    return ok(res, {
+      deleted: true,
+      appointmentId: appointment.id,
+      clientId: appointment.clientId
+    });
   })
 );
 

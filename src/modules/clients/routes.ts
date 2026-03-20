@@ -17,7 +17,14 @@ import { D, toNumber } from '../../utils/money';
 import { normalizePhone10, toPhoneE164 } from '../../utils/phone';
 import { ok } from '../../utils/response';
 import { notifyOnClientDiscountChanged } from '../notifications/service';
-import { clientAvatarUpload, deleteClientAvatar, resolveClientAvatarUrl, saveClientAvatar } from './avatar';
+import { deleteAppointmentsCascade } from '../appointments/service';
+import {
+  clientAvatarUpload,
+  deleteClientAvatar,
+  removeClientAvatarFileByPath,
+  resolveClientAvatarUrl,
+  saveClientAvatar
+} from './avatar';
 import { upsertClientByPhone } from './service';
 
 const listClientsQuerySchema = z.object({
@@ -576,6 +583,56 @@ clientsRouter.patch(
         temporaryDiscountFrom: updated.temporaryDiscountFrom,
         temporaryDiscountTo: updated.temporaryDiscountTo
       })
+    });
+  })
+);
+
+clientsRouter.delete(
+  '/:id',
+  authenticateRequired,
+  requireStaff,
+  requirePermission('EDIT_CLIENTS'),
+  validateParams(clientIdParamSchema),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params as z.infer<typeof clientIdParamSchema>;
+
+    const existing = await prisma.client.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        avatarPath: true
+      }
+    });
+    if (!existing) {
+      throw notFound('Client not found');
+    }
+
+    const appointmentIds = (
+      await prisma.appointment.findMany({
+        where: { clientId: id },
+        select: { id: true }
+      })
+    ).map((item) => item.id);
+
+    await prisma.$transaction(async (tx) => {
+      await deleteAppointmentsCascade(tx, appointmentIds);
+      await tx.session.deleteMany({
+        where: {
+          subjectType: 'CLIENT',
+          subjectId: id
+        }
+      });
+      await tx.client.delete({
+        where: { id }
+      });
+    });
+
+    await removeClientAvatarFileByPath(existing.avatarPath);
+
+    return ok(res, {
+      deleted: true,
+      clientId: id,
+      deletedAppointmentsCount: appointmentIds.length
     });
   })
 );

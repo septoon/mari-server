@@ -223,3 +223,11 @@ export const deleteClientAvatar = async (clientId: string) => {
     previousAvatarPath: existing.avatarPath
   };
 };
+
+export const removeClientAvatarFileByPath = async (avatarPath?: string | null) => {
+  if (!avatarPath) {
+    return;
+  }
+
+  await safeUnlink(ensureMediaPathSafe(avatarPath));
+};

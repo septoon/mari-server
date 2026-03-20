@@ -244,3 +244,67 @@ export const buildApiAppointmentExternalId = (
 ): string => {
   return sha1(['api', staffId, clientId, startAt.toISOString(), ...serviceIds.sort()].join('|'));
 };
+
+export const deleteAppointmentsCascade = async (
+  db: Prisma.TransactionClient,
+  appointmentIds: string[]
+): Promise<number> => {
+  const uniqueAppointmentIds = Array.from(new Set(appointmentIds.filter(Boolean)));
+  if (uniqueAppointmentIds.length === 0) {
+    return 0;
+  }
+
+  const redemptions = await db.promoCodeRedemption.findMany({
+    where: {
+      appointmentId: {
+        in: uniqueAppointmentIds
+      }
+    },
+    select: {
+      promoCodeId: true
+    }
+  });
+
+  const promoUsageById = new Map<string, number>();
+  redemptions.forEach((redemption) => {
+    promoUsageById.set(
+      redemption.promoCodeId,
+      (promoUsageById.get(redemption.promoCodeId) ?? 0) + 1
+    );
+  });
+
+  if (promoUsageById.size > 0) {
+    const promoCodes = await db.promoCode.findMany({
+      where: {
+        id: {
+          in: Array.from(promoUsageById.keys())
+        }
+      },
+      select: {
+        id: true,
+        usedCount: true
+      }
+    });
+
+    await Promise.all(
+      promoCodes.map((promoCode) =>
+        db.promoCode.update({
+          where: { id: promoCode.id },
+          data: {
+            usedCount: Math.max(0, promoCode.usedCount - (promoUsageById.get(promoCode.id) ?? 0))
+          }
+        })
+      )
+    );
+  }
+
+  const result = await db.appointment.deleteMany({
+    where: {
+      id: {
+        in: uniqueAppointmentIds
+      }
+    }
+  });
+
+  return result.count;
+};
