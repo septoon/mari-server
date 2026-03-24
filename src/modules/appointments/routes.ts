@@ -18,7 +18,6 @@ import {
   hasPermission,
   requireStaff,
   requireStaffRoles,
-  requireStaffRolesOrPermission,
   requirePermission,
 } from '../../middlewares/auth';
 import { validateBody, validateParams, validateQuery } from '../../middlewares/validate';
@@ -354,7 +353,11 @@ appointmentsRouter.post(
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof createAppointmentSchema>;
 
-    if (req.auth?.subjectType === 'STAFF' && !hasPermission(req, 'EDIT_JOURNAL')) {
+    if (
+      req.auth?.subjectType === 'STAFF' &&
+      !hasPermission(req, 'CREATE_JOURNAL_APPOINTMENTS') &&
+      !hasPermission(req, 'EDIT_JOURNAL')
+    ) {
       throw forbidden('No permission to edit journal');
     }
 
@@ -592,14 +595,23 @@ appointmentsRouter.get(
   '/appointments',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermission('VIEW_JOURNAL', 'OWNER'),
   validateQuery(appointmentsListQuerySchema),
   asyncHandler(async (req, res) => {
+    const actor = req.auth!;
+    if (actor.staffRole === 'MASTER') {
+      if (!hasPermission(req, 'VIEW_ALL_JOURNAL_APPOINTMENTS')) {
+        throw forbidden('MASTER can view full journal only with extra permission');
+      }
+    } else if (actor.staffRole !== 'OWNER' && !hasPermission(req, 'VIEW_JOURNAL')) {
+      throw forbidden('No permission to view journal');
+    }
+
     const query = req.validatedQuery as z.infer<typeof appointmentsListQuerySchema>;
     const page = query.page;
     const limit = query.limit;
     const skip = (page - 1) * limit;
     const startAt = buildDateRange(query.from, query.to);
+    const canViewClientPhone = actor.staffRole !== 'MASTER' || hasPermission(req, 'VIEW_CLIENT_PHONE');
 
     const where = {
       ...(startAt ? { startAt } : {}),
@@ -642,7 +654,7 @@ appointmentsRouter.get(
           client: {
             id: row.client.id,
             name: row.client.name,
-            phoneE164: row.client.phoneE164
+            phoneE164: canViewClientPhone ? row.client.phoneE164 : undefined
           },
           services: row.appointmentServices.map((service) => ({
             id: service.id,
@@ -693,13 +705,13 @@ appointmentsRouter.get(
   authenticateRequired,
   requireStaff,
   requireStaffRoles('MASTER'),
-  requirePermission('VIEW_JOURNAL'),
   validateQuery(masterAppointmentsQuerySchema),
   asyncHandler(async (req, res) => {
     const query = req.validatedQuery as z.infer<typeof masterAppointmentsQuerySchema>;
     const page = query.page;
     const limit = query.limit;
     const skip = (page - 1) * limit;
+    const canViewClientPhone = hasPermission(req, 'VIEW_CLIENT_PHONE');
 
     const startAt = buildDateRange(query.from, query.to) ?? { gte: todayStartMskUtc() };
 
@@ -732,7 +744,8 @@ appointmentsRouter.get(
           endAt: row.endAt.toISOString(),
           client: {
             id: row.client.id,
-            name: row.client.name
+            name: row.client.name,
+            phoneE164: canViewClientPhone ? row.client.phoneE164 : undefined,
           },
           services: row.appointmentServices.map((service) => ({
             name: service.serviceNameSnapshot,

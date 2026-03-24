@@ -9,13 +9,31 @@ export const STAFF_PERMISSION_CATALOG: StaffPermissionCatalogItem[] = [
   {
     code: 'VIEW_JOURNAL',
     title: 'Журнал: просмотр',
-    description: 'Просмотр записей и истории клиентов',
+    description: 'Доступ к журналу. Для мастера без доп. прав это только свои текущие и будущие записи',
+    group: 'workspace',
+  },
+  {
+    code: 'VIEW_ALL_JOURNAL_APPOINTMENTS',
+    title: 'Журнал: все записи',
+    description: 'Просмотр всех записей журнала, а не только своих текущих и будущих',
+    group: 'workspace',
+  },
+  {
+    code: 'VIEW_CLIENT_PHONE',
+    title: 'Журнал: телефон клиента',
+    description: 'Показывать номер телефона клиента в журнале и карточке записи',
     group: 'workspace',
   },
   {
     code: 'EDIT_JOURNAL',
     title: 'Журнал: редактирование',
     description: 'Создание и изменение записей в журнале',
+    group: 'workspace',
+  },
+  {
+    code: 'CREATE_JOURNAL_APPOINTMENTS',
+    title: 'Журнал: создание записи',
+    description: 'Создание новых записей в журнале без полного редактирования',
     group: 'workspace',
   },
   {
