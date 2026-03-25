@@ -59,8 +59,19 @@ const roleUpdateSchema = z.object({
   role: z.enum(['ADMIN', 'MASTER', 'DEVELOPER', 'SMM'])
 });
 
+const lifecycleMomentSchema = z
+  .string()
+  .trim()
+  .refine((value) => /^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isNaN(new Date(value).getTime()), {
+    message: 'Expected ISO date or datetime'
+  });
+
 const fireSchema = z.object({
-  firedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+  firedAt: lifecycleMomentSchema.optional()
+});
+
+const restoreSchema = z.object({
+  hiredAt: lifecycleMomentSchema.optional()
 });
 
 const contactUpdateSchema = z.object({
@@ -97,6 +108,7 @@ const staffListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   role: z.enum(['OWNER', 'ADMIN', 'MASTER', 'DEVELOPER', 'SMM']).optional(),
   isActive: z.union([z.literal('true'), z.literal('false')]).optional(),
+  employmentStatus: z.enum(['all', 'current', 'fired', 'deleted']).default('all'),
   search: z.string().trim().min(1).optional()
 });
 
@@ -118,10 +130,25 @@ const buildTemporaryPhone10 = (name: string, attempt: number): string => {
   return `9${value.toString().padStart(9, '0')}`;
 };
 
-const buildArchivedPhone10 = (staffId: string, attempt: number): string => {
-  const hash = sha1(`fired|${staffId}|${attempt}`);
+const buildDeletedPhone10 = (staffId: string, attempt: number): string => {
+  const hash = sha1(`deleted|${staffId}|${attempt}`);
   const value = Number(BigInt(`0x${hash.slice(0, 12)}`) % 1000000000n);
   return `9${value.toString().padStart(9, '0')}`;
+};
+
+const parseLifecycleMoment = (raw?: string): Date => {
+  if (!raw) {
+    return new Date();
+  }
+  const trimmed = raw.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return parseDateOnlyToUtc(trimmed);
+  }
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    throw conflict('Invalid lifecycle datetime');
+  }
+  return parsed;
 };
 
 const buildSetPinLink = (token: string): string => `${env.STAFF_WEB_BASE_URL}/staff/set-pin?token=${token}`;
@@ -204,6 +231,13 @@ staffRouter.get(
     const where = {
       ...(query.role ? { role: query.role } : {}),
       ...(query.isActive ? { isActive: query.isActive === 'true' } : {}),
+      ...(query.employmentStatus === 'current'
+        ? { firedAt: null, deletedAt: null }
+        : query.employmentStatus === 'fired'
+          ? { firedAt: { not: null }, deletedAt: null }
+          : query.employmentStatus === 'deleted'
+            ? { deletedAt: { not: null } }
+            : {}),
       ...(query.search
         ? {
             OR: [
@@ -274,6 +308,7 @@ staffRouter.get(
           isActive: row.isActive,
           hiredAt: row.hiredAt,
           firedAt: row.firedAt,
+          deletedAt: row.deletedAt,
           position: row.position ? { id: row.position.id, name: row.position.name } : null,
           permissions: row.permissions.map((sp) => ({
             code: sp.permission.code,
@@ -329,9 +364,10 @@ staffRouter.post(
             phone10,
             phoneE164,
             ...(positionId !== undefined ? { positionId } : {}),
-            hiredAt: body.hiredAt ? parseDateOnlyToUtc(body.hiredAt) : existing.hiredAt,
+            hiredAt: body.hiredAt ? parseDateOnlyToUtc(body.hiredAt) : new Date(),
             isActive: true,
-            firedAt: null
+            firedAt: null,
+            deletedAt: null
           }
         })
       : await prisma.staff.create({
@@ -342,7 +378,7 @@ staffRouter.post(
             phone10,
             phoneE164,
             positionId: positionId ?? null,
-            hiredAt: body.hiredAt ? parseDateOnlyToUtc(body.hiredAt) : null,
+            hiredAt: body.hiredAt ? parseDateOnlyToUtc(body.hiredAt) : new Date(),
             isActive: true
           }
         });
@@ -416,7 +452,7 @@ staffRouter.post(
     if (!token) {
       throw notFound('Token not found or expired');
     }
-    if (!token.staff.isActive || token.staff.firedAt) {
+    if (!token.staff.isActive || token.staff.firedAt || token.staff.deletedAt) {
       throw notFound('Token not found or expired');
     }
 
@@ -468,7 +504,7 @@ staffRouter.post(
         : null;
 
     let resetLink: string | undefined;
-    if (staff && staff.email && staff.isActive && !staff.firedAt) {
+    if (staff && staff.email && staff.isActive && !staff.firedAt && !staff.deletedAt) {
       const rawToken = randomToken();
       await prisma.staffToken.create({
         data: {
@@ -522,7 +558,7 @@ staffRouter.post(
     if (!token) {
       throw notFound('Token not found or expired');
     }
-    if (!token.staff.isActive || token.staff.firedAt) {
+    if (!token.staff.isActive || token.staff.firedAt || token.staff.deletedAt) {
       throw notFound('Token not found or expired');
     }
 
@@ -586,6 +622,9 @@ staffRouter.patch(
     if (!staff) throw notFound('Staff not found');
     if (staff.role === StaffRole.OWNER && actor.staffRole !== StaffRole.OWNER) {
       throw forbidden('ADMIN cannot edit OWNER (Владелец)');
+    }
+    if (staff.deletedAt) {
+      throw forbidden('Deleted staff cannot be edited');
     }
 
     const phone10 = normalizePhone10(body.phone);
@@ -660,6 +699,9 @@ staffRouter.patch(
     if (!staff) throw notFound('Staff not found');
     if (staff.role === StaffRole.OWNER && actor.staffRole !== StaffRole.OWNER) {
       throw forbidden('ADMIN cannot edit OWNER (Владелец)');
+    }
+    if (staff.deletedAt) {
+      throw forbidden('Deleted staff cannot be edited');
     }
 
     if (body.photoAssetId) {
@@ -824,6 +866,9 @@ staffRouter.put(
     if (staff.role === StaffRole.OWNER && actor.staffRole !== StaffRole.OWNER) {
       throw forbidden('ADMIN cannot edit OWNER (Владелец)');
     }
+    if (staff.deletedAt) {
+      throw forbidden('Deleted staff cannot be edited');
+    }
 
     const uniqueServiceIds = [...new Set(body.serviceIds)];
     if (uniqueServiceIds.length > 0) {
@@ -886,6 +931,9 @@ staffRouter.patch(
     if (staff.role === StaffRole.OWNER) {
       throw forbidden('OWNER (Владелец) cannot be edited via this endpoint');
     }
+    if (staff.deletedAt) {
+      throw forbidden('Deleted staff cannot be edited');
+    }
 
     const updated = await prisma.staff.update({
       where: { id },
@@ -901,7 +949,8 @@ staffRouter.patch(
         role: updated.role,
         isActive: updated.isActive,
         hiredAt: updated.hiredAt,
-        firedAt: updated.firedAt
+        firedAt: updated.firedAt,
+        deletedAt: updated.deletedAt
       }
     });
   })
@@ -938,6 +987,9 @@ staffRouter.get(
     });
     if (!staff) {
       throw notFound('Staff not found');
+    }
+    if (staff.deletedAt) {
+      throw forbidden('Deleted staff permissions cannot be changed');
     }
 
     return ok(res, {
@@ -1033,6 +1085,52 @@ staffRouter.delete(
 );
 
 staffRouter.post(
+  '/:id/restore',
+  authenticateRequired,
+  requireStaff,
+  requireStaffRoles('OWNER'),
+  validateParams(idParamSchema),
+  validateBody(restoreSchema),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params as z.infer<typeof idParamSchema>;
+    const body = req.body as z.infer<typeof restoreSchema>;
+
+    const staff = await prisma.staff.findUnique({ where: { id } });
+    if (!staff) throw notFound('Staff not found');
+    if (staff.role === StaffRole.OWNER) {
+      throw forbidden('OWNER (Владелец) cannot be restored');
+    }
+    if (staff.deletedAt) {
+      throw forbidden('Deleted staff cannot be restored');
+    }
+
+    const hiredAt = parseLifecycleMoment(body.hiredAt);
+    const updated = await prisma.staff.update({
+      where: { id },
+      data: {
+        hiredAt,
+        firedAt: null,
+        isActive: true
+      }
+    });
+
+    return ok(res, {
+      staff: {
+        id: updated.id,
+        name: updated.name,
+        phoneE164: updated.phoneE164,
+        email: updated.email,
+        role: updated.role,
+        hiredAt: updated.hiredAt,
+        firedAt: updated.firedAt,
+        deletedAt: updated.deletedAt,
+        isActive: updated.isActive
+      }
+    });
+  })
+);
+
+staffRouter.post(
   '/:id/fire',
   authenticateRequired,
   requireStaff,
@@ -1048,26 +1146,14 @@ staffRouter.post(
     if (staff.role === StaffRole.OWNER) {
       throw forbidden('OWNER (Владелец) cannot be fired');
     }
+    if (staff.deletedAt) {
+      throw forbidden('Deleted staff cannot be fired');
+    }
 
-    const firedAt = parseDateOnlyToUtc(body.firedAt);
+    const firedAt = parseLifecycleMoment(body.firedAt);
     const now = new Date();
 
     const updated = await prisma.$transaction(async (tx) => {
-      let archivedPhone10 = buildArchivedPhone10(id, 0);
-      let attempt = 0;
-      // Keep unique phone10 so the original phone can be reused for a new invite.
-      while (true) {
-        const existing = await tx.staff.findUnique({
-          where: { phone10: archivedPhone10 },
-          select: { id: true }
-        });
-        if (!existing || existing.id === id) {
-          break;
-        }
-        attempt += 1;
-        archivedPhone10 = buildArchivedPhone10(id, attempt);
-      }
-
       const cancelledFutureAppointments = await tx.appointment.updateMany({
         where: {
           staffId: id,
@@ -1086,10 +1172,6 @@ staffRouter.post(
         data: {
           firedAt,
           isActive: false,
-          email: null,
-          phone10: archivedPhone10,
-          phoneE164: toPhoneE164(archivedPhone10),
-          pinHash: null
         }
       });
 
@@ -1127,10 +1209,139 @@ staffRouter.post(
         phoneE164: updated.staff.phoneE164,
         email: updated.staff.email,
         role: updated.staff.role,
+        hiredAt: updated.staff.hiredAt,
         firedAt: updated.staff.firedAt,
+        deletedAt: updated.staff.deletedAt,
         isActive: updated.staff.isActive
       },
       cancelledFutureAppointments: updated.cancelledFutureAppointments
+    });
+  })
+);
+
+staffRouter.delete(
+  '/:id',
+  authenticateRequired,
+  requireStaff,
+  requireStaffRoles('OWNER'),
+  validateParams(idParamSchema),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params as z.infer<typeof idParamSchema>;
+
+    const staff = await prisma.staff.findUnique({ where: { id } });
+    if (!staff) throw notFound('Staff not found');
+    if (staff.role === StaffRole.OWNER) {
+      throw forbidden('OWNER (Владелец) cannot be deleted');
+    }
+
+    const now = new Date();
+
+    const updated = await prisma.$transaction(async (tx) => {
+      let deletedPhone10 = buildDeletedPhone10(id, 0);
+      let attempt = 0;
+      while (true) {
+        const existing = await tx.staff.findUnique({
+          where: { phone10: deletedPhone10 },
+          select: { id: true }
+        });
+        if (!existing || existing.id === id) {
+          break;
+        }
+        attempt += 1;
+        deletedPhone10 = buildDeletedPhone10(id, attempt);
+      }
+
+      const cancelledFutureAppointments = await tx.appointment.updateMany({
+        where: {
+          staffId: id,
+          startAt: { gt: now },
+          status: {
+            notIn: [AppointmentStatus.CANCELLED, AppointmentStatus.NO_SHOW]
+          }
+        },
+        data: {
+          status: AppointmentStatus.CANCELLED
+        }
+      });
+
+      await tx.staffPermission.deleteMany({ where: { staffId: id } });
+      await tx.staffService.deleteMany({ where: { staffId: id } });
+      await tx.mediaUsage.deleteMany({
+        where: {
+          usageType: 'CLIENT_SPECIALIST_PROFILE',
+          entityId: id
+        }
+      });
+      await tx.clientSpecialistProfile.updateMany({
+        where: { staffId: id },
+        data: {
+          photoAssetIdDraft: null,
+          photoAssetIdPublished: null,
+          specialtyDraft: null,
+          specialtyPublished: null,
+          infoDraft: null,
+          infoPublished: null,
+          isVisibleDraft: false,
+          isVisiblePublished: false
+        }
+      });
+
+      const deletedStaff = await tx.staff.update({
+        where: { id },
+        data: {
+          deletedAt: now,
+          firedAt: staff.firedAt ?? now,
+          isActive: false,
+          email: null,
+          name: 'Удаленный сотрудник',
+          phone10: deletedPhone10,
+          phoneE164: toPhoneE164(deletedPhone10),
+          pinHash: null,
+          positionId: null
+        }
+      });
+
+      await tx.session.updateMany({
+        where: {
+          subjectType: 'STAFF',
+          subjectId: id,
+          revokedAt: null
+        },
+        data: {
+          revokedAt: now
+        }
+      });
+
+      await tx.staffToken.updateMany({
+        where: {
+          staffId: id,
+          usedAt: null
+        },
+        data: {
+          usedAt: now
+        }
+      });
+
+      return {
+        staff: deletedStaff,
+        cancelledFutureAppointments: cancelledFutureAppointments.count
+      };
+    });
+
+    return ok(res, {
+      staff: {
+        id: updated.staff.id,
+        name: updated.staff.name,
+        phoneE164: updated.staff.phoneE164,
+        email: updated.staff.email,
+        role: updated.staff.role,
+        hiredAt: updated.staff.hiredAt,
+        firedAt: updated.staff.firedAt,
+        deletedAt: updated.staff.deletedAt,
+        isActive: updated.staff.isActive
+      },
+      cancelledFutureAppointments: updated.cancelledFutureAppointments,
+      deleted: true
     });
   })
 );
@@ -1146,7 +1357,7 @@ export const findOrCreateStaffByName = async (
     throw conflict('Staff name is required');
   }
 
-  const found = await prisma.staff.findFirst({ where: { name: normalizedName } });
+  const found = await prisma.staff.findFirst({ where: { name: normalizedName, deletedAt: null } });
   if (found) {
     return { id: found.id, name: found.name };
   }

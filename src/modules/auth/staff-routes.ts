@@ -43,7 +43,7 @@ staffAuthRouter.post(
         },
       },
     });
-    if (!staff || !staff.pinHash || !staff.isActive || staff.firedAt) {
+    if (!staff || !staff.pinHash || !staff.isActive || staff.firedAt || staff.deletedAt) {
       throw unauthorized('Invalid credentials');
     }
 
@@ -89,7 +89,7 @@ staffAuthRouter.post(
         },
       },
     });
-    if (!staff || !staff.isActive || staff.firedAt) {
+    if (!staff || !staff.isActive || staff.firedAt || staff.deletedAt) {
       throw unauthorized('Staff account is not active');
     }
 
@@ -123,7 +123,7 @@ staffAuthRouter.get(
         },
       },
     });
-    if (!staff || !staff.isActive || staff.firedAt) {
+    if (!staff || !staff.isActive || staff.firedAt || staff.deletedAt) {
       throw unauthorized('Staff account is not active');
     }
     return ok(res, {

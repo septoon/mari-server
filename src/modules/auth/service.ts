@@ -83,7 +83,7 @@ export const rotateRefresh = async (refreshToken: string): Promise<{
   let staffRole: StaffRole | undefined;
   if (payload.subjectType === 'STAFF') {
     const staff = await prisma.staff.findUnique({ where: { id: payload.sub } });
-    if (!staff || !staff.isActive || staff.firedAt) {
+    if (!staff || !staff.isActive || staff.firedAt || staff.deletedAt) {
       throw unauthorized('Staff account is not active');
     }
     staffRole = staff.role;

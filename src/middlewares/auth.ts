@@ -59,7 +59,7 @@ const loadStaffContext = async (staffId: string): Promise<{ role: StaffRole; per
     }
   });
 
-  if (!staff || !staff.isActive || staff.firedAt) {
+  if (!staff || !staff.isActive || staff.firedAt || staff.deletedAt) {
     throw unauthorized('Staff account is not active');
   }
 

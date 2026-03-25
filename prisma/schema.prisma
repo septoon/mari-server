@@ -141,6 +141,7 @@ model Staff {
   pinHash    String?
   hiredAt    DateTime?
   firedAt    DateTime?
+  deletedAt  DateTime?
   isActive   Boolean   @default(true)
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
@@ -171,6 +172,7 @@ model Staff {
 
   @@index([role])
   @@index([positionId])
+  @@index([deletedAt])
 }
 
 model Permission {
