@@ -59,6 +59,10 @@ const roleUpdateSchema = z.object({
   role: z.enum(['ADMIN', 'MASTER', 'DEVELOPER', 'SMM'])
 });
 
+const appointmentNotificationAccessSchema = z.object({
+  receivesAllAppointmentNotifications: z.boolean()
+});
+
 const lifecycleMomentSchema = z
   .string()
   .trim()
@@ -214,6 +218,13 @@ const resolveStaffAvatarAssetId = (row: {
   return row.specialistProfile?.photoDraft?.id ?? row.specialistProfile?.photoPublished?.id ?? null;
 };
 
+const normalizeReceivesAllAppointmentNotifications = (staff: {
+  role: StaffRole;
+  receivesAllAppointmentNotifications: boolean;
+}) => {
+  return staff.role === StaffRole.OWNER || staff.receivesAllAppointmentNotifications;
+};
+
 export const staffRouter = Router();
 
 staffRouter.get(
@@ -303,6 +314,7 @@ staffRouter.get(
           role: row.role,
           phoneE164: row.phoneE164,
           email: row.email,
+          receivesAllAppointmentNotifications: normalizeReceivesAllAppointmentNotifications(row),
           avatarUrl: resolveStaffAvatarUrl(row),
           avatarAssetId: resolveStaffAvatarAssetId(row),
           isActive: row.isActive,
@@ -664,7 +676,8 @@ staffRouter.patch(
         email: updated.email,
         position: updated.position ? { id: updated.position.id, name: updated.position.name } : null,
         role: updated.role,
-        isActive: updated.isActive
+        isActive: updated.isActive,
+        receivesAllAppointmentNotifications: normalizeReceivesAllAppointmentNotifications(updated)
       }
     });
   })
@@ -950,7 +963,57 @@ staffRouter.patch(
         isActive: updated.isActive,
         hiredAt: updated.hiredAt,
         firedAt: updated.firedAt,
-        deletedAt: updated.deletedAt
+        deletedAt: updated.deletedAt,
+        receivesAllAppointmentNotifications: normalizeReceivesAllAppointmentNotifications(updated)
+      }
+    });
+  })
+);
+
+staffRouter.patch(
+  '/:id/appointment-notifications',
+  authenticateRequired,
+  requireStaff,
+  requireStaffRoles('OWNER'),
+  validateParams(idParamSchema),
+  validateBody(appointmentNotificationAccessSchema),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params as z.infer<typeof idParamSchema>;
+    const body = req.body as z.infer<typeof appointmentNotificationAccessSchema>;
+
+    const staff = await prisma.staff.findUnique({
+      where: { id },
+      include: { position: true }
+    });
+    if (!staff) {
+      throw notFound('Staff not found');
+    }
+    if (staff.deletedAt) {
+      throw forbidden('Deleted staff cannot be edited');
+    }
+
+    const updated = await prisma.staff.update({
+      where: { id },
+      data: {
+        receivesAllAppointmentNotifications:
+          staff.role === StaffRole.OWNER ? true : body.receivesAllAppointmentNotifications
+      },
+      include: { position: true }
+    });
+
+    return ok(res, {
+      staff: {
+        id: updated.id,
+        name: updated.name,
+        role: updated.role,
+        phoneE164: updated.phoneE164,
+        email: updated.email,
+        isActive: updated.isActive,
+        hiredAt: updated.hiredAt,
+        firedAt: updated.firedAt,
+        deletedAt: updated.deletedAt,
+        receivesAllAppointmentNotifications: normalizeReceivesAllAppointmentNotifications(updated),
+        position: updated.position ? { id: updated.position.id, name: updated.position.name } : null
       }
     });
   })

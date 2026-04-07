@@ -30,6 +30,11 @@ let jobsTimer: NodeJS.Timeout | null = null;
 let jobsRunning = false;
 
 type AppointmentMailContext = Awaited<ReturnType<typeof loadAppointmentMailContext>>;
+type StaffEmailRecipient = {
+  staffId: string;
+  email: string;
+  role: StaffRole;
+};
 
 const SUPPORTED_NOTIFICATION_IDS = [
   'clients.onlineBookingCreated',
@@ -226,19 +231,102 @@ const loadAppointmentMailContext = async (appointmentId: string) => {
 const formatServiceNames = (appointment: AppointmentMailContext) =>
   appointment?.appointmentServices.map((item) => item.serviceNameSnapshot).join(', ') || 'Услуга';
 
-const listAdminEmails = async () => {
+const normalizeRecipientEmail = (value: string | null | undefined) => value?.trim().toLowerCase() || null;
+
+const listOwnerRecipients = async (): Promise<StaffEmailRecipient[]> => {
   const rows = await prisma.staff.findMany({
     where: {
       isActive: true,
       firedAt: null,
+      deletedAt: null,
       email: { not: null },
-      role: { in: [StaffRole.OWNER, StaffRole.ADMIN] },
+      role: StaffRole.OWNER,
     },
-    select: { email: true },
+    select: { id: true, email: true, role: true },
   });
   return rows
-    .map((row) => row.email?.trim().toLowerCase())
-    .filter((value): value is string => Boolean(value));
+    .map((row) => {
+      const email = normalizeRecipientEmail(row.email);
+      if (!email) {
+        return null;
+      }
+      return {
+        staffId: row.id,
+        email,
+        role: row.role,
+      };
+    })
+    .filter((value): value is StaffEmailRecipient => Boolean(value));
+};
+
+const listGlobalAppointmentNotificationRecipients = async (input?: {
+  excludeStaffIds?: string[];
+  includeOwners?: boolean;
+}): Promise<StaffEmailRecipient[]> => {
+  const excludeStaffIds = [...new Set(input?.excludeStaffIds?.filter(Boolean) ?? [])];
+  const rows = await prisma.staff.findMany({
+    where: {
+      isActive: true,
+      firedAt: null,
+      deletedAt: null,
+      email: { not: null },
+      ...(excludeStaffIds.length > 0 ? { id: { notIn: excludeStaffIds } } : {}),
+      ...(input?.includeOwners === false ? { role: { not: StaffRole.OWNER } } : {}),
+      OR: [
+        ...(input?.includeOwners === false ? [] : [{ role: StaffRole.OWNER }]),
+        { receivesAllAppointmentNotifications: true },
+      ],
+    },
+    select: { id: true, email: true, role: true },
+  });
+
+  const byEmail = new Map<string, StaffEmailRecipient>();
+  rows.forEach((row) => {
+    const email = normalizeRecipientEmail(row.email);
+    if (!email) {
+      return;
+    }
+    if (!byEmail.has(email)) {
+      byEmail.set(email, {
+        staffId: row.id,
+        email,
+        role: row.role,
+      });
+    }
+  });
+  return [...byEmail.values()];
+};
+
+const sendGlobalAppointmentNotification = async (input: {
+  notificationId: SupportedNotificationId;
+  dispatchKeyPrefix: string;
+  appointmentId: string;
+  subject: string;
+  lines: string[];
+  excludeStaffIds?: string[];
+  includeOwners?: boolean;
+}) => {
+  const recipients = await listGlobalAppointmentNotificationRecipients({
+    excludeStaffIds: input.excludeStaffIds,
+    includeOwners: input.includeOwners,
+  });
+
+  await Promise.all(
+    recipients.map((recipient) =>
+      sendNotificationEmail({
+        notificationId: input.notificationId,
+        dispatchKey: `${input.dispatchKeyPrefix}:${recipient.staffId}`,
+        recipientEmail: recipient.email,
+        subject: input.subject,
+        lines: input.lines,
+        meta: {
+          appointmentId: input.appointmentId,
+          audience: recipient.role === StaffRole.OWNER ? 'owner' : 'staff-broadcast',
+          staffId: recipient.staffId,
+        },
+      }),
+    ),
+  );
 };
 
 const getDiscountLabel = (client: {
@@ -306,13 +394,13 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
       meta: { appointmentId: appointment.id },
     });
 
-    const adminEmails = await listAdminEmails();
+    const ownerRecipients = await listOwnerRecipients();
     await Promise.all(
-      adminEmails.map((email) =>
+      ownerRecipients.map((recipient) =>
         sendNotificationEmail({
           notificationId: 'admins.clientBookingCreated',
-          dispatchKey: `admins.clientBookingCreated:${appointment.id}:${email}`,
-          recipientEmail: email,
+          dispatchKey: `admins.clientBookingCreated:${appointment.id}:${recipient.staffId}`,
+          recipientEmail: recipient.email,
           subject: 'Клиент создал новую запись',
           lines: [
             `Клиент ${appointment.client.name || appointment.client.phoneE164} создал запись на ${appointmentDateTimeLabel(appointment)}.`,
@@ -334,6 +422,20 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
         `Услуги: ${formatServiceNames(appointment)}.`,
       ],
       meta: { appointmentId: appointment.id, audience: 'staff' },
+    });
+
+    await sendGlobalAppointmentNotification({
+      notificationId: 'staff.clientBookingCreated',
+      dispatchKeyPrefix: `staff.clientBookingCreated:broadcast:${appointment.id}`,
+      appointmentId: appointment.id,
+      excludeStaffIds: [appointment.staff.id],
+      includeOwners: false,
+      subject: `Новая запись к ${appointment.staff.name}`,
+      lines: [
+        `Клиент ${appointment.client.name || appointment.client.phoneE164} создал запись на ${appointmentDateTimeLabel(appointment)}.`,
+        `Специалист: ${appointment.staff.name}.`,
+        `Услуги: ${formatServiceNames(appointment)}.`,
+      ],
     });
     return;
   }
@@ -363,13 +465,13 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
     meta: { appointmentId: appointment.id },
   });
 
-  const adminEmails = await listAdminEmails();
+  const ownerRecipients = await listOwnerRecipients();
   await Promise.all(
-    adminEmails.map((email) =>
+    ownerRecipients.map((recipient) =>
       sendNotificationEmail({
         notificationId: 'admins.adminBookingCreated',
-        dispatchKey: `admins.adminBookingCreated:${appointment.id}:${email}`,
-        recipientEmail: email,
+        dispatchKey: `admins.adminBookingCreated:${appointment.id}:${recipient.staffId}`,
+        recipientEmail: recipient.email,
         subject: 'Администратор создал запись',
         lines: [
           `Создана запись на ${appointmentDateTimeLabel(appointment)}.`,
@@ -392,6 +494,21 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
       `Услуги: ${formatServiceNames(appointment)}.`,
     ],
     meta: { appointmentId: appointment.id, audience: 'staff' },
+  });
+
+  await sendGlobalAppointmentNotification({
+    notificationId: 'staff.adminBookingCreated',
+    dispatchKeyPrefix: `staff.adminBookingCreated:broadcast:${appointment.id}`,
+    appointmentId: appointment.id,
+    excludeStaffIds: [appointment.staff.id],
+    includeOwners: false,
+    subject: `Создана запись к ${appointment.staff.name}`,
+    lines: [
+      `Администратор создал запись на ${appointmentDateTimeLabel(appointment)}.`,
+      `Клиент: ${appointment.client.name || appointment.client.phoneE164}.`,
+      `Специалист: ${appointment.staff.name}.`,
+      `Услуги: ${formatServiceNames(appointment)}.`,
+    ],
   });
 };
 
@@ -446,6 +563,18 @@ export const notifyOnAppointmentStatusChanged = async (input: {
       ],
       meta: { appointmentId: appointment.id, audience: 'staff' },
     });
+
+    await sendGlobalAppointmentNotification({
+      notificationId: 'staff.bookingCancelled',
+      dispatchKeyPrefix: `staff.bookingCancelled:broadcast:${appointment.id}:${appointment.updatedAt.toISOString()}`,
+      appointmentId: appointment.id,
+      excludeStaffIds: [appointment.staff.id],
+      includeOwners: true,
+      subject: `Запись отменена у ${appointment.staff.name}`,
+      lines: [
+        `Запись клиента ${appointment.client.name || appointment.client.phoneE164} на ${appointmentDateTimeLabel(appointment)} у специалиста ${appointment.staff.name} отменена.`,
+      ],
+    });
   }
 
   if (input.nextStatus === AppointmentStatus.NO_SHOW) {
@@ -470,6 +599,18 @@ export const notifyOnAppointmentStatusChanged = async (input: {
         `Запись клиента ${appointment.client.name || appointment.client.phoneE164} на ${appointmentDateTimeLabel(appointment)} отмечена как «Клиент не пришёл».`,
       ],
       meta: { appointmentId: appointment.id, audience: 'staff' },
+    });
+
+    await sendGlobalAppointmentNotification({
+      notificationId: 'staff.noShowMarked',
+      dispatchKeyPrefix: `staff.noShowMarked:broadcast:${appointment.id}:${appointment.updatedAt.toISOString()}`,
+      appointmentId: appointment.id,
+      excludeStaffIds: [appointment.staff.id],
+      includeOwners: true,
+      subject: `Неявка у ${appointment.staff.name}`,
+      lines: [
+        `Запись клиента ${appointment.client.name || appointment.client.phoneE164} на ${appointmentDateTimeLabel(appointment)} у специалиста ${appointment.staff.name} отмечена как «Клиент не пришёл».`,
+      ],
     });
   }
 
@@ -521,13 +662,13 @@ export const notifyOnAppointmentRescheduled = async (input: {
   });
 
   if (appointment.createdByType === ActorType.CLIENT) {
-    const adminEmails = await listAdminEmails();
+    const ownerRecipients = await listOwnerRecipients();
     await Promise.all(
-      adminEmails.map((email) =>
+      ownerRecipients.map((recipient) =>
         sendNotificationEmail({
           notificationId: 'admins.widgetBookingRescheduled',
-          dispatchKey: `admins.widgetBookingRescheduled:${appointment.id}:${email}:${appointment.updatedAt.toISOString()}`,
-          recipientEmail: email,
+          dispatchKey: `admins.widgetBookingRescheduled:${appointment.id}:${recipient.staffId}:${appointment.updatedAt.toISOString()}`,
+          recipientEmail: recipient.email,
           subject: 'Перенесена запись из онлайн-виджета',
           lines: [
             `Запись клиента ${appointment.client.name || appointment.client.phoneE164} перенесена на ${appointmentDateTimeLabel(appointment)}.`,
@@ -550,6 +691,20 @@ export const notifyOnAppointmentRescheduled = async (input: {
     ],
     meta: { appointmentId: appointment.id, audience: 'staff' },
   });
+
+  await sendGlobalAppointmentNotification({
+    notificationId: 'staff.bookingRescheduled',
+    dispatchKeyPrefix: `staff.bookingRescheduled:broadcast:${appointment.id}:${appointment.updatedAt.toISOString()}`,
+    appointmentId: appointment.id,
+    excludeStaffIds: [appointment.staff.id],
+    includeOwners: appointment.createdByType !== ActorType.CLIENT,
+    subject: `Запись перенесена у ${appointment.staff.name}`,
+    lines: [
+      `Запись клиента ${appointment.client.name || appointment.client.phoneE164} перенесена на ${appointmentDateTimeLabel(appointment)}.`,
+      `Предыдущий специалист: ${input.previousStaffName}. Новый специалист: ${appointment.staff.name}.`,
+      `Услуги: ${formatServiceNames(appointment)}.`,
+    ],
+  });
 };
 
 export const notifyOnClientCancelled = async (appointmentId: string) => {
@@ -570,13 +725,13 @@ export const notifyOnClientCancelled = async (appointmentId: string) => {
     meta: { appointmentId: appointment.id },
   });
 
-  const adminEmails = await listAdminEmails();
+  const ownerRecipients = await listOwnerRecipients();
   await Promise.all(
-    adminEmails.map((email) =>
+    ownerRecipients.map((recipient) =>
       sendNotificationEmail({
         notificationId: 'admins.widgetBookingCancelled',
-        dispatchKey: `admins.widgetBookingCancelled:${appointment.id}:${email}`,
-        recipientEmail: email,
+        dispatchKey: `admins.widgetBookingCancelled:${appointment.id}:${recipient.staffId}`,
+        recipientEmail: recipient.email,
         subject: 'Клиент отменил запись',
         lines: [
           `Клиент ${appointment.client.name || appointment.client.phoneE164} отменил запись на ${appointmentDateTimeLabel(appointment)}.`,
@@ -595,6 +750,18 @@ export const notifyOnClientCancelled = async (appointmentId: string) => {
       `Клиент ${appointment.client.name || appointment.client.phoneE164} отменил запись на ${appointmentDateTimeLabel(appointment)}.`,
     ],
     meta: { appointmentId: appointment.id, audience: 'staff' },
+  });
+
+  await sendGlobalAppointmentNotification({
+    notificationId: 'staff.bookingCancelled',
+    dispatchKeyPrefix: `staff.bookingCancelled:broadcast:client:${appointment.id}`,
+    appointmentId: appointment.id,
+    excludeStaffIds: [appointment.staff.id],
+    includeOwners: false,
+    subject: `Клиент отменил запись у ${appointment.staff.name}`,
+    lines: [
+      `Клиент ${appointment.client.name || appointment.client.phoneE164} отменил запись на ${appointmentDateTimeLabel(appointment)} у специалиста ${appointment.staff.name}.`,
+    ],
   });
 };
 
@@ -908,8 +1075,8 @@ const processRepeatVisitInvites = async () => {
 };
 
 const processScheduleEndingSoon = async () => {
-  const admins = await listAdminEmails();
-  if (admins.length === 0) {
+  const owners = await listOwnerRecipients();
+  if (owners.length === 0) {
     return;
   }
 
@@ -940,12 +1107,12 @@ const processScheduleEndingSoon = async () => {
   }
 
   await Promise.all(
-    admins.flatMap((email) =>
+    owners.flatMap((recipient) =>
       lackingSchedule.map((staff) =>
         sendNotificationEmail({
           notificationId: 'admins.scheduleEndingSoon',
-          dispatchKey: `admins.scheduleEndingSoon:${staff.id}:${email}:${dayjs().format('YYYY-MM-DD')}`,
-          recipientEmail: email,
+          dispatchKey: `admins.scheduleEndingSoon:${staff.id}:${recipient.staffId}:${dayjs().format('YYYY-MM-DD')}`,
+          recipientEmail: recipient.email,
           subject: 'У сотрудника нет расписания на ближайшие дни',
           lines: [
             `Для сотрудника ${staff.name} не найдено расписание на ближайшие ${SCHEDULE_LOOKAHEAD_DAYS} дней.`,

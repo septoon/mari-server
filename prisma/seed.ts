@@ -78,6 +78,7 @@ const run = async () => {
         phone10: ownerPhone10,
         phoneE164: ownerPhoneE164,
         isActive: true,
+        receivesAllAppointmentNotifications: true,
         firedAt: null
       }
     });
@@ -90,7 +91,8 @@ const run = async () => {
         pinHash,
         phone10: ownerPhone10,
         phoneE164: ownerPhoneE164,
-        isActive: true
+        isActive: true,
+        receivesAllAppointmentNotifications: true
       }
     });
   }
