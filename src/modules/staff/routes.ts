@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { StaffRole, AppointmentStatus } from '@prisma/client';
+import { AppointmentStatus, Prisma, StaffRole } from '@prisma/client';
 import { z } from 'zod';
 
 import { env } from '../../config/env';
@@ -225,7 +225,88 @@ const normalizeReceivesAllAppointmentNotifications = (staff: {
   return staff.role === StaffRole.OWNER || staff.receivesAllAppointmentNotifications;
 };
 
+const buildStaffProfileInclude = () =>
+  Prisma.validator<Prisma.StaffInclude>()({
+    position: true,
+    specialistProfile: {
+      include: {
+        photoDraft: {
+          include: {
+            variants: {
+              select: {
+                width: true,
+                path: true,
+                urlPath: true
+              }
+            }
+          }
+        },
+        photoPublished: {
+          include: {
+            variants: {
+              select: {
+                width: true,
+                path: true,
+                urlPath: true
+              }
+            }
+          }
+        }
+      }
+    },
+    permissions: {
+      where: {
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }]
+      },
+      include: { permission: true }
+    }
+  });
+
+type StaffProfileRow = Prisma.StaffGetPayload<{
+  include: ReturnType<typeof buildStaffProfileInclude>;
+}>;
+
+const serializeStaffProfile = (row: StaffProfileRow) => ({
+  id: row.id,
+  name: row.name,
+  role: row.role,
+  phoneE164: row.phoneE164,
+  email: row.email,
+  receivesAllAppointmentNotifications: normalizeReceivesAllAppointmentNotifications(row),
+  avatarUrl: resolveStaffAvatarUrl(row),
+  avatarAssetId: resolveStaffAvatarAssetId(row),
+  isActive: row.isActive,
+  hiredAt: row.hiredAt,
+  firedAt: row.firedAt,
+  deletedAt: row.deletedAt,
+  position: row.position ? { id: row.position.id, name: row.position.name } : null,
+  permissions: row.permissions.map((sp) => ({
+    code: sp.permission.code,
+    expiresAt: sp.expiresAt
+  }))
+});
+
 export const staffRouter = Router();
+
+staffRouter.get(
+  '/me',
+  authenticateRequired,
+  requireStaff,
+  asyncHandler(async (req, res) => {
+    const staff = await prisma.staff.findUnique({
+      where: { id: req.auth!.subjectId },
+      include: buildStaffProfileInclude()
+    });
+
+    if (!staff) {
+      throw notFound('Staff not found');
+    }
+
+    return ok(res, {
+      staff: serializeStaffProfile(staff)
+    });
+  })
+);
 
 staffRouter.get(
   '/',
@@ -264,41 +345,7 @@ staffRouter.get(
       prisma.staff.count({ where }),
       prisma.staff.findMany({
         where,
-        include: {
-          position: true,
-          specialistProfile: {
-            include: {
-              photoDraft: {
-                include: {
-                  variants: {
-                    select: {
-                      width: true,
-                      path: true,
-                      urlPath: true
-                    }
-                  }
-                }
-              },
-              photoPublished: {
-                include: {
-                  variants: {
-                    select: {
-                      width: true,
-                      path: true,
-                      urlPath: true
-                    }
-                  }
-                }
-              }
-            }
-          },
-          permissions: {
-            where: {
-              OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }]
-            },
-            include: { permission: true }
-          }
-        },
+        include: buildStaffProfileInclude(),
         orderBy: [{ role: 'asc' }, { name: 'asc' }],
         skip,
         take: limit
@@ -308,25 +355,7 @@ staffRouter.get(
     return ok(
       res,
       {
-        items: items.map((row) => ({
-          id: row.id,
-          name: row.name,
-          role: row.role,
-          phoneE164: row.phoneE164,
-          email: row.email,
-          receivesAllAppointmentNotifications: normalizeReceivesAllAppointmentNotifications(row),
-          avatarUrl: resolveStaffAvatarUrl(row),
-          avatarAssetId: resolveStaffAvatarAssetId(row),
-          isActive: row.isActive,
-          hiredAt: row.hiredAt,
-          firedAt: row.firedAt,
-          deletedAt: row.deletedAt,
-          position: row.position ? { id: row.position.id, name: row.position.name } : null,
-          permissions: row.permissions.map((sp) => ({
-            code: sp.permission.code,
-            expiresAt: sp.expiresAt
-          }))
-        }))
+        items: items.map(serializeStaffProfile)
       },
       200,
       {
@@ -609,7 +638,6 @@ staffRouter.patch(
   '/:id/contact',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermissions(['EDIT_STAFF', 'EDIT_SELF_PROFILE'], 'OWNER'),
   validateParams(idParamSchema),
   validateBody(contactUpdateSchema),
   asyncHandler(async (req, res) => {
@@ -618,13 +646,10 @@ staffRouter.patch(
     const actor = req.auth!;
     const isSelfEdit = actor.subjectId === id;
     const canEditAnyStaff = actor.staffRole === StaffRole.OWNER || hasPermission(req, 'EDIT_STAFF');
-    const canEditOwnProfile =
-      actor.staffRole === StaffRole.OWNER ||
-      (actor.staffRole === StaffRole.ADMIN && hasPermission(req, 'EDIT_SELF_PROFILE'));
 
     if (isSelfEdit) {
-      if (!canEditOwnProfile && !canEditAnyStaff) {
-        throw forbidden('Not enough permissions to edit own profile');
+      if (!canEditAnyStaff && body.positionName !== undefined) {
+        throw forbidden('Not enough permissions to edit own specialization');
       }
     } else if (!canEditAnyStaff) {
       throw forbidden('Not enough permissions to edit staff contact');
@@ -642,7 +667,10 @@ staffRouter.patch(
     const phone10 = normalizePhone10(body.phone);
     const phoneE164 = toPhoneE164(phone10);
     const email = body.email === undefined ? undefined : (body.email ? body.email.toLowerCase() : null);
-    const positionId = body.positionName === undefined ? undefined : await upsertPosition(body.positionName);
+    const positionId =
+      canEditAnyStaff && body.positionName !== undefined
+        ? await upsertPosition(body.positionName)
+        : undefined;
 
     if (email) {
       const sameEmail = await prisma.staff.findUnique({ where: { email } });
@@ -687,7 +715,6 @@ staffRouter.patch(
   '/:id/avatar',
   authenticateRequired,
   requireStaff,
-  requireStaffRolesOrPermissions(['EDIT_STAFF', 'EDIT_SELF_PROFILE'], 'OWNER'),
   validateParams(idParamSchema),
   validateBody(avatarUpdateSchema),
   asyncHandler(async (req, res) => {
@@ -696,15 +723,8 @@ staffRouter.patch(
     const actor = req.auth!;
     const isSelfEdit = actor.subjectId === id;
     const canEditAnyStaff = actor.staffRole === StaffRole.OWNER || hasPermission(req, 'EDIT_STAFF');
-    const canEditOwnProfile =
-      actor.staffRole === StaffRole.OWNER ||
-      (actor.staffRole === StaffRole.ADMIN && hasPermission(req, 'EDIT_SELF_PROFILE'));
 
-    if (isSelfEdit) {
-      if (!canEditOwnProfile && !canEditAnyStaff) {
-        throw forbidden('Not enough permissions to edit own profile avatar');
-      }
-    } else if (!canEditAnyStaff) {
+    if (!isSelfEdit && !canEditAnyStaff) {
       throw forbidden('Not enough permissions to edit staff avatar');
     }
 

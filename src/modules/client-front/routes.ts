@@ -3,10 +3,16 @@ import multer from 'multer';
 import { z } from 'zod';
 
 import { env } from '../../config/env';
-import { authenticateRequired, requirePermission, requireStaff, requireStaffRoles } from '../../middlewares/auth';
+import {
+  authenticateRequired,
+  hasPermission,
+  requirePermission,
+  requireStaff,
+  requireStaffRoles
+} from '../../middlewares/auth';
 import { validateBody, validateParams, validateQuery } from '../../middlewares/validate';
 import { asyncHandler } from '../../utils/async-handler';
-import { badRequest } from '../../utils/errors';
+import { badRequest, forbidden } from '../../utils/errors';
 import { ok } from '../../utils/response';
 import {
   blockIdParamsSchema,
@@ -274,7 +280,6 @@ clientFrontRouter.post(
   '/staff/media/upload',
   authenticateRequired,
   requireStaff,
-  requirePermission('MANAGE_MEDIA'),
   upload.single('file'),
   asyncHandler(async (req, res) => {
     const file = req.file;
@@ -287,8 +292,13 @@ clientFrontRouter.post(
       throw badRequest('Invalid upload payload', bodyValidation.error.flatten());
     }
 
+    const entity = bodyValidation.data.entity.trim().toLowerCase();
+    if (!hasPermission(req, 'MANAGE_MEDIA') && entity !== 'specialists') {
+      throw forbidden();
+    }
+
     await ensureMediaStorageReady();
-    const uploaded = await uploadMediaAsset(file, bodyValidation.data.entity, req.auth!.subjectId);
+    const uploaded = await uploadMediaAsset(file, entity, req.auth!.subjectId);
     return ok(res, uploaded, 201);
   })
 );
@@ -365,10 +375,15 @@ clientFrontRouter.delete(
   '/staff/media/:id',
   authenticateRequired,
   requireStaff,
-  requirePermission('MANAGE_MEDIA'),
   validateParams(mediaAssetParamsSchema.pick({ id: true })),
   asyncHandler(async (req, res) => {
     const params = req.params as z.infer<typeof mediaAssetParamsSchema>;
+    if (!hasPermission(req, 'MANAGE_MEDIA')) {
+      const asset = await getMediaAsset(params.id);
+      if (asset.entity !== 'specialists') {
+        throw forbidden();
+      }
+    }
     const result = await deleteMediaAsset(params.id, req.auth!.subjectId);
     return ok(res, result);
   })
