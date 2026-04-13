@@ -4,6 +4,7 @@ import {
   DiscountType,
   PaymentMethod,
   Prisma,
+  PushEnvironment,
   StaffRole,
 } from '@prisma/client';
 import dayjs from 'dayjs';
@@ -15,6 +16,7 @@ import { env } from '../../config/env';
 import { formatDateMsk, MSK_TZ } from '../../utils/time';
 import { NOTIFICATION_ID_SET } from './catalog';
 import { getOrCreateAppConfig, normalizeNotificationSettings } from '../settings/service';
+import { sendPushAlert } from '../push/service';
 
 const WORKER_INTERVAL_MS = 60_000;
 const NO_SHOW_REINVITE_DAYS = 7;
@@ -34,6 +36,16 @@ type StaffEmailRecipient = {
   staffId: string;
   email: string;
   role: StaffRole;
+};
+
+type StaffPushRecipient = {
+  staffId: string;
+  role: StaffRole;
+  devices: Array<{
+    id: string;
+    token: string;
+    environment: PushEnvironment;
+  }>;
 };
 
 const SUPPORTED_NOTIFICATION_IDS = [
@@ -329,6 +341,183 @@ const sendGlobalAppointmentNotification = async (input: {
   );
 };
 
+const buildPushBody = (lines: string[]) => {
+  const text = lines
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join(' ');
+
+  if (text.length <= 180) {
+    return text;
+  }
+
+  return `${text.slice(0, 177).trimEnd()}...`;
+};
+
+const listGlobalAppointmentPushRecipients = async (input?: {
+  excludeStaffIds?: string[];
+  includeOwners?: boolean;
+  includeAdmins?: boolean;
+}): Promise<StaffPushRecipient[]> => {
+  const excludeStaffIds = [...new Set(input?.excludeStaffIds?.filter(Boolean) ?? [])];
+  const rows = await prisma.staff.findMany({
+    where: {
+      isActive: true,
+      firedAt: null,
+      deletedAt: null,
+      pushDevices: { some: {} },
+      ...(excludeStaffIds.length > 0 ? { id: { notIn: excludeStaffIds } } : {}),
+      OR: [
+        ...(input?.includeOwners === false ? [] : [{ role: StaffRole.OWNER }]),
+        ...(input?.includeAdmins === false ? [] : [{ role: StaffRole.ADMIN }]),
+        { receivesAllAppointmentNotifications: true },
+      ],
+    },
+    select: {
+      id: true,
+      role: true,
+      pushDevices: {
+        select: {
+          id: true,
+          token: true,
+          environment: true,
+        },
+      },
+    },
+  });
+
+  return rows
+    .map((row) => ({
+      staffId: row.id,
+      role: row.role,
+      devices: row.pushDevices,
+    }))
+    .filter((row) => row.devices.length > 0);
+};
+
+const loadDirectPushRecipient = async (staffId: string): Promise<StaffPushRecipient | null> => {
+  const row = await prisma.staff.findFirst({
+    where: {
+      id: staffId,
+      isActive: true,
+      firedAt: null,
+      deletedAt: null,
+      pushDevices: { some: {} },
+    },
+    select: {
+      id: true,
+      role: true,
+      pushDevices: {
+        select: {
+          id: true,
+          token: true,
+          environment: true,
+        },
+      },
+    },
+  });
+
+  if (!row || row.pushDevices.length === 0) {
+    return null;
+  }
+
+  return {
+    staffId: row.id,
+    role: row.role,
+    devices: row.pushDevices,
+  };
+};
+
+const sendPushToRecipients = async (input: {
+  notificationId: SupportedNotificationId;
+  dispatchKeyPrefix: string;
+  appointmentId: string;
+  title: string;
+  lines: string[];
+  recipients: StaffPushRecipient[];
+}) => {
+  const { enabled } = await isNotificationEnabled(input.notificationId);
+  if (!enabled || input.recipients.length === 0) {
+    return;
+  }
+
+  const body = buildPushBody(input.lines);
+
+  await Promise.all(
+    input.recipients.flatMap((recipient) =>
+      recipient.devices.map((device) =>
+        sendPushAlert({
+          dispatchKey: `${input.dispatchKeyPrefix}:${device.id}`,
+          notificationId: input.notificationId,
+          device,
+          title: input.title,
+          body,
+          payload: {
+            appointmentId: input.appointmentId,
+            notificationId: input.notificationId,
+            staffId: recipient.staffId,
+            audience:
+              recipient.role === StaffRole.OWNER
+                ? 'owner'
+                : recipient.role === StaffRole.ADMIN
+                  ? 'admin'
+                  : 'staff',
+          },
+        }),
+      ),
+    ),
+  );
+};
+
+const sendDirectStaffPushNotification = async (input: {
+  notificationId: SupportedNotificationId;
+  dispatchKeyPrefix: string;
+  appointmentId: string;
+  staffId: string;
+  title: string;
+  lines: string[];
+}) => {
+  const recipient = await loadDirectPushRecipient(input.staffId);
+  if (!recipient) {
+    return;
+  }
+
+  await sendPushToRecipients({
+    notificationId: input.notificationId,
+    dispatchKeyPrefix: input.dispatchKeyPrefix,
+    appointmentId: input.appointmentId,
+    title: input.title,
+    lines: input.lines,
+    recipients: [recipient],
+  });
+};
+
+const sendGlobalAppointmentPushNotification = async (input: {
+  notificationId: SupportedNotificationId;
+  dispatchKeyPrefix: string;
+  appointmentId: string;
+  title: string;
+  lines: string[];
+  excludeStaffIds?: string[];
+  includeOwners?: boolean;
+  includeAdmins?: boolean;
+}) => {
+  const recipients = await listGlobalAppointmentPushRecipients({
+    excludeStaffIds: input.excludeStaffIds,
+    includeOwners: input.includeOwners,
+    includeAdmins: input.includeAdmins,
+  });
+
+  await sendPushToRecipients({
+    notificationId: input.notificationId,
+    dispatchKeyPrefix: input.dispatchKeyPrefix,
+    appointmentId: input.appointmentId,
+    title: input.title,
+    lines: input.lines,
+    recipients,
+  });
+};
+
 const getDiscountLabel = (client: {
   discountType: DiscountType;
   discountValue: Prisma.Decimal | null;
@@ -424,6 +613,18 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
       meta: { appointmentId: appointment.id, audience: 'staff' },
     });
 
+    await sendDirectStaffPushNotification({
+      notificationId: 'staff.clientBookingCreated',
+      dispatchKeyPrefix: `staff.clientBookingCreated:${appointment.id}:${appointment.staff.id}`,
+      appointmentId: appointment.id,
+      staffId: appointment.staff.id,
+      title: 'Клиент записался к вам',
+      lines: [
+        `Клиент ${appointment.client.name || appointment.client.phoneE164} записался к вам на ${appointmentDateTimeLabel(appointment)}.`,
+        `Услуги: ${formatServiceNames(appointment)}.`,
+      ],
+    });
+
     await sendGlobalAppointmentNotification({
       notificationId: 'staff.clientBookingCreated',
       dispatchKeyPrefix: `staff.clientBookingCreated:broadcast:${appointment.id}`,
@@ -431,6 +632,21 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
       excludeStaffIds: [appointment.staff.id],
       includeOwners: false,
       subject: `Новая запись к ${appointment.staff.name}`,
+      lines: [
+        `Клиент ${appointment.client.name || appointment.client.phoneE164} создал запись на ${appointmentDateTimeLabel(appointment)}.`,
+        `Специалист: ${appointment.staff.name}.`,
+        `Услуги: ${formatServiceNames(appointment)}.`,
+      ],
+    });
+
+    await sendGlobalAppointmentPushNotification({
+      notificationId: 'staff.clientBookingCreated',
+      dispatchKeyPrefix: `staff.clientBookingCreated:broadcast:${appointment.id}`,
+      appointmentId: appointment.id,
+      excludeStaffIds: [appointment.staff.id],
+      includeOwners: true,
+      includeAdmins: true,
+      title: `Новая запись к ${appointment.staff.name}`,
       lines: [
         `Клиент ${appointment.client.name || appointment.client.phoneE164} создал запись на ${appointmentDateTimeLabel(appointment)}.`,
         `Специалист: ${appointment.staff.name}.`,
@@ -496,6 +712,19 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
     meta: { appointmentId: appointment.id, audience: 'staff' },
   });
 
+  await sendDirectStaffPushNotification({
+    notificationId: 'staff.adminBookingCreated',
+    dispatchKeyPrefix: `staff.adminBookingCreated:${appointment.id}:${appointment.staff.id}`,
+    appointmentId: appointment.id,
+    staffId: appointment.staff.id,
+    title: 'Администратор создал запись к вам',
+    lines: [
+      `Администратор создал запись на ${appointmentDateTimeLabel(appointment)}.`,
+      `Клиент: ${appointment.client.name || appointment.client.phoneE164}.`,
+      `Услуги: ${formatServiceNames(appointment)}.`,
+    ],
+  });
+
   await sendGlobalAppointmentNotification({
     notificationId: 'staff.adminBookingCreated',
     dispatchKeyPrefix: `staff.adminBookingCreated:broadcast:${appointment.id}`,
@@ -503,6 +732,22 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
     excludeStaffIds: [appointment.staff.id],
     includeOwners: false,
     subject: `Создана запись к ${appointment.staff.name}`,
+    lines: [
+      `Администратор создал запись на ${appointmentDateTimeLabel(appointment)}.`,
+      `Клиент: ${appointment.client.name || appointment.client.phoneE164}.`,
+      `Специалист: ${appointment.staff.name}.`,
+      `Услуги: ${formatServiceNames(appointment)}.`,
+    ],
+  });
+
+  await sendGlobalAppointmentPushNotification({
+    notificationId: 'staff.adminBookingCreated',
+    dispatchKeyPrefix: `staff.adminBookingCreated:broadcast:${appointment.id}`,
+    appointmentId: appointment.id,
+    excludeStaffIds: [appointment.staff.id],
+    includeOwners: true,
+    includeAdmins: true,
+    title: `Создана запись к ${appointment.staff.name}`,
     lines: [
       `Администратор создал запись на ${appointmentDateTimeLabel(appointment)}.`,
       `Клиент: ${appointment.client.name || appointment.client.phoneE164}.`,
@@ -564,6 +809,17 @@ export const notifyOnAppointmentStatusChanged = async (input: {
       meta: { appointmentId: appointment.id, audience: 'staff' },
     });
 
+    await sendDirectStaffPushNotification({
+      notificationId: 'staff.bookingCancelled',
+      dispatchKeyPrefix: `staff.bookingCancelled:${appointment.id}:${appointment.staff.id}:${appointment.updatedAt.toISOString()}`,
+      appointmentId: appointment.id,
+      staffId: appointment.staff.id,
+      title: 'Запись отменена',
+      lines: [
+        `Запись клиента ${appointment.client.name || appointment.client.phoneE164} на ${appointmentDateTimeLabel(appointment)} отменена.`,
+      ],
+    });
+
     await sendGlobalAppointmentNotification({
       notificationId: 'staff.bookingCancelled',
       dispatchKeyPrefix: `staff.bookingCancelled:broadcast:${appointment.id}:${appointment.updatedAt.toISOString()}`,
@@ -571,6 +827,19 @@ export const notifyOnAppointmentStatusChanged = async (input: {
       excludeStaffIds: [appointment.staff.id],
       includeOwners: true,
       subject: `Запись отменена у ${appointment.staff.name}`,
+      lines: [
+        `Запись клиента ${appointment.client.name || appointment.client.phoneE164} на ${appointmentDateTimeLabel(appointment)} у специалиста ${appointment.staff.name} отменена.`,
+      ],
+    });
+
+    await sendGlobalAppointmentPushNotification({
+      notificationId: 'staff.bookingCancelled',
+      dispatchKeyPrefix: `staff.bookingCancelled:broadcast:${appointment.id}:${appointment.updatedAt.toISOString()}`,
+      appointmentId: appointment.id,
+      excludeStaffIds: [appointment.staff.id],
+      includeOwners: true,
+      includeAdmins: true,
+      title: `Запись отменена у ${appointment.staff.name}`,
       lines: [
         `Запись клиента ${appointment.client.name || appointment.client.phoneE164} на ${appointmentDateTimeLabel(appointment)} у специалиста ${appointment.staff.name} отменена.`,
       ],
@@ -601,6 +870,17 @@ export const notifyOnAppointmentStatusChanged = async (input: {
       meta: { appointmentId: appointment.id, audience: 'staff' },
     });
 
+    await sendDirectStaffPushNotification({
+      notificationId: 'staff.noShowMarked',
+      dispatchKeyPrefix: `staff.noShowMarked:${appointment.id}:${appointment.staff.id}:${appointment.updatedAt.toISOString()}`,
+      appointmentId: appointment.id,
+      staffId: appointment.staff.id,
+      title: 'Запись отмечена как неявка',
+      lines: [
+        `Запись клиента ${appointment.client.name || appointment.client.phoneE164} на ${appointmentDateTimeLabel(appointment)} отмечена как «Клиент не пришёл».`,
+      ],
+    });
+
     await sendGlobalAppointmentNotification({
       notificationId: 'staff.noShowMarked',
       dispatchKeyPrefix: `staff.noShowMarked:broadcast:${appointment.id}:${appointment.updatedAt.toISOString()}`,
@@ -608,6 +888,19 @@ export const notifyOnAppointmentStatusChanged = async (input: {
       excludeStaffIds: [appointment.staff.id],
       includeOwners: true,
       subject: `Неявка у ${appointment.staff.name}`,
+      lines: [
+        `Запись клиента ${appointment.client.name || appointment.client.phoneE164} на ${appointmentDateTimeLabel(appointment)} у специалиста ${appointment.staff.name} отмечена как «Клиент не пришёл».`,
+      ],
+    });
+
+    await sendGlobalAppointmentPushNotification({
+      notificationId: 'staff.noShowMarked',
+      dispatchKeyPrefix: `staff.noShowMarked:broadcast:${appointment.id}:${appointment.updatedAt.toISOString()}`,
+      appointmentId: appointment.id,
+      excludeStaffIds: [appointment.staff.id],
+      includeOwners: true,
+      includeAdmins: true,
+      title: `Неявка у ${appointment.staff.name}`,
       lines: [
         `Запись клиента ${appointment.client.name || appointment.client.phoneE164} на ${appointmentDateTimeLabel(appointment)} у специалиста ${appointment.staff.name} отмечена как «Клиент не пришёл».`,
       ],
@@ -692,6 +985,18 @@ export const notifyOnAppointmentRescheduled = async (input: {
     meta: { appointmentId: appointment.id, audience: 'staff' },
   });
 
+  await sendDirectStaffPushNotification({
+    notificationId: 'staff.bookingRescheduled',
+    dispatchKeyPrefix: `staff.bookingRescheduled:${appointment.id}:${appointment.staff.id}:${appointment.updatedAt.toISOString()}`,
+    appointmentId: appointment.id,
+    staffId: appointment.staff.id,
+    title: 'Запись перенесена',
+    lines: [
+      `Запись клиента ${appointment.client.name || appointment.client.phoneE164} перенесена на ${appointmentDateTimeLabel(appointment)}.`,
+      `Услуги: ${formatServiceNames(appointment)}.`,
+    ],
+  });
+
   await sendGlobalAppointmentNotification({
     notificationId: 'staff.bookingRescheduled',
     dispatchKeyPrefix: `staff.bookingRescheduled:broadcast:${appointment.id}:${appointment.updatedAt.toISOString()}`,
@@ -699,6 +1004,21 @@ export const notifyOnAppointmentRescheduled = async (input: {
     excludeStaffIds: [appointment.staff.id],
     includeOwners: appointment.createdByType !== ActorType.CLIENT,
     subject: `Запись перенесена у ${appointment.staff.name}`,
+    lines: [
+      `Запись клиента ${appointment.client.name || appointment.client.phoneE164} перенесена на ${appointmentDateTimeLabel(appointment)}.`,
+      `Предыдущий специалист: ${input.previousStaffName}. Новый специалист: ${appointment.staff.name}.`,
+      `Услуги: ${formatServiceNames(appointment)}.`,
+    ],
+  });
+
+  await sendGlobalAppointmentPushNotification({
+    notificationId: 'staff.bookingRescheduled',
+    dispatchKeyPrefix: `staff.bookingRescheduled:broadcast:${appointment.id}:${appointment.updatedAt.toISOString()}`,
+    appointmentId: appointment.id,
+    excludeStaffIds: [appointment.staff.id],
+    includeOwners: true,
+    includeAdmins: true,
+    title: `Запись перенесена у ${appointment.staff.name}`,
     lines: [
       `Запись клиента ${appointment.client.name || appointment.client.phoneE164} перенесена на ${appointmentDateTimeLabel(appointment)}.`,
       `Предыдущий специалист: ${input.previousStaffName}. Новый специалист: ${appointment.staff.name}.`,
@@ -752,6 +1072,17 @@ export const notifyOnClientCancelled = async (appointmentId: string) => {
     meta: { appointmentId: appointment.id, audience: 'staff' },
   });
 
+  await sendDirectStaffPushNotification({
+    notificationId: 'staff.bookingCancelled',
+    dispatchKeyPrefix: `staff.bookingCancelled:client:${appointment.id}:${appointment.staff.id}`,
+    appointmentId: appointment.id,
+    staffId: appointment.staff.id,
+    title: 'Клиент отменил запись',
+    lines: [
+      `Клиент ${appointment.client.name || appointment.client.phoneE164} отменил запись на ${appointmentDateTimeLabel(appointment)}.`,
+    ],
+  });
+
   await sendGlobalAppointmentNotification({
     notificationId: 'staff.bookingCancelled',
     dispatchKeyPrefix: `staff.bookingCancelled:broadcast:client:${appointment.id}`,
@@ -759,6 +1090,19 @@ export const notifyOnClientCancelled = async (appointmentId: string) => {
     excludeStaffIds: [appointment.staff.id],
     includeOwners: false,
     subject: `Клиент отменил запись у ${appointment.staff.name}`,
+    lines: [
+      `Клиент ${appointment.client.name || appointment.client.phoneE164} отменил запись на ${appointmentDateTimeLabel(appointment)} у специалиста ${appointment.staff.name}.`,
+    ],
+  });
+
+  await sendGlobalAppointmentPushNotification({
+    notificationId: 'staff.bookingCancelled',
+    dispatchKeyPrefix: `staff.bookingCancelled:broadcast:client:${appointment.id}`,
+    appointmentId: appointment.id,
+    excludeStaffIds: [appointment.staff.id],
+    includeOwners: true,
+    includeAdmins: true,
+    title: `Клиент отменил запись у ${appointment.staff.name}`,
     lines: [
       `Клиент ${appointment.client.name || appointment.client.phoneE164} отменил запись на ${appointmentDateTimeLabel(appointment)} у специалиста ${appointment.staff.name}.`,
     ],

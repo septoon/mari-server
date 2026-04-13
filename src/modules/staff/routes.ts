@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { AppointmentStatus, Prisma, StaffRole } from '@prisma/client';
+import { AppointmentStatus, Prisma, PushEnvironment, StaffRole } from '@prisma/client';
 import { z } from 'zod';
 
 import { env } from '../../config/env';
@@ -61,6 +61,15 @@ const roleUpdateSchema = z.object({
 
 const appointmentNotificationAccessSchema = z.object({
   receivesAllAppointmentNotifications: z.boolean()
+});
+
+const pushDeviceRegisterSchema = z.object({
+  token: z.string().trim().min(32).max(512),
+  environment: z.enum(['sandbox', 'production']),
+});
+
+const pushDeviceDeleteSchema = z.object({
+  token: z.string().trim().min(32).max(512),
 });
 
 const lifecycleMomentSchema = z
@@ -305,6 +314,53 @@ staffRouter.get(
     return ok(res, {
       staff: serializeStaffProfile(staff)
     });
+  })
+);
+
+staffRouter.post(
+  '/push/devices',
+  authenticateRequired,
+  requireStaff,
+  validateBody(pushDeviceRegisterSchema),
+  asyncHandler(async (req, res) => {
+    const body = req.body as z.infer<typeof pushDeviceRegisterSchema>;
+    const environment =
+      body.environment === 'sandbox' ? PushEnvironment.SANDBOX : PushEnvironment.PRODUCTION;
+
+    await prisma.staffPushDevice.upsert({
+      where: { token: body.token },
+      update: {
+        staffId: req.auth!.subjectId,
+        environment,
+        lastSeenAt: new Date(),
+      },
+      create: {
+        staffId: req.auth!.subjectId,
+        token: body.token,
+        environment,
+        lastSeenAt: new Date(),
+      },
+    });
+
+    return ok(res, { registered: true });
+  })
+);
+
+staffRouter.delete(
+  '/push/devices',
+  authenticateRequired,
+  requireStaff,
+  validateBody(pushDeviceDeleteSchema),
+  asyncHandler(async (req, res) => {
+    const body = req.body as z.infer<typeof pushDeviceDeleteSchema>;
+    const removed = await prisma.staffPushDevice.deleteMany({
+      where: {
+        staffId: req.auth!.subjectId,
+        token: body.token,
+      },
+    });
+
+    return ok(res, { removed: removed.count > 0 });
   })
 );
 

@@ -54,6 +54,11 @@ enum ActorType {
   SYSTEM
 }
 
+enum PushEnvironment {
+  SANDBOX
+  PRODUCTION
+}
+
 enum ClientContentStatus {
   DRAFT
   PUBLISHED
@@ -170,6 +175,7 @@ model Staff {
   specialistProfile           ClientSpecialistProfile?
   specialistProfilesUpdated   ClientSpecialistProfile[] @relation("specialist_profile_updated_by")
   specialistProfilesPublished ClientSpecialistProfile[] @relation("specialist_profile_published_by")
+  pushDevices                 StaffPushDevice[]
 
   @@index([role])
   @@index([positionId])
@@ -254,6 +260,35 @@ model NotificationDispatch {
 
   @@index([notificationId, createdAt])
   @@index([recipientEmail])
+}
+
+model StaffPushDevice {
+  id          String          @id @default(uuid())
+  staffId      String
+  token        String          @unique
+  environment  PushEnvironment
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  lastSeenAt   DateTime        @default(now())
+
+  staff       Staff         @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  dispatches  PushDispatch[]
+
+  @@index([staffId])
+  @@index([environment])
+}
+
+model PushDispatch {
+  id                String   @id @default(uuid())
+  dispatchKey       String   @unique
+  notificationId    String
+  staffPushDeviceId String
+  createdAt         DateTime @default(now())
+
+  device StaffPushDevice @relation(fields: [staffPushDeviceId], references: [id], onDelete: Cascade)
+
+  @@index([notificationId, createdAt])
+  @@index([staffPushDeviceId])
 }
 
 model ClientAppConfig {

@@ -24,6 +24,11 @@ const envSchema = z.object({
   SMTP_USER: z.string().min(1).optional(),
   SMTP_PASS: z.string().min(1).optional(),
   SMTP_FROM: z.string().min(1).optional(),
+  APNS_KEY_ID: z.string().min(1).optional(),
+  APNS_TEAM_ID: z.string().min(1).optional(),
+  APNS_BUNDLE_ID: z.string().min(1).optional(),
+  APNS_PRIVATE_KEY: z.string().min(1).optional(),
+  APNS_PRIVATE_KEY_PATH: z.string().min(1).optional(),
   OWNER_EMAIL: z.string().email().optional(),
   OWNER_NAME: z.string().optional(),
   OWNER_PIN: z.string().min(4).max(16).optional(),
@@ -67,6 +72,27 @@ if (mediaVariantWidths.length === 0) {
   process.exit(1);
 }
 
+const hasAnyApnsConfig = [
+  parsed.data.APNS_KEY_ID,
+  parsed.data.APNS_TEAM_ID,
+  parsed.data.APNS_BUNDLE_ID,
+  parsed.data.APNS_PRIVATE_KEY,
+  parsed.data.APNS_PRIVATE_KEY_PATH,
+].some((value) => Boolean(value));
+
+const hasCompleteApnsConfig =
+  Boolean(parsed.data.APNS_KEY_ID) &&
+  Boolean(parsed.data.APNS_TEAM_ID) &&
+  Boolean(parsed.data.APNS_BUNDLE_ID) &&
+  Boolean(parsed.data.APNS_PRIVATE_KEY || parsed.data.APNS_PRIVATE_KEY_PATH);
+
+if (hasAnyApnsConfig && !hasCompleteApnsConfig) {
+  console.error('Environment validation failed', {
+    APNS: 'Set APNS_KEY_ID, APNS_TEAM_ID, APNS_BUNDLE_ID and either APNS_PRIVATE_KEY or APNS_PRIVATE_KEY_PATH',
+  });
+  process.exit(1);
+}
+
 export const env = {
   ...parsed.data,
   APP_BASE_URL: normalizeBaseUrl(parsed.data.APP_BASE_URL),
@@ -76,6 +102,7 @@ export const env = {
   CLIENT_WEB_RESET_PASSWORD_PATH: normalizePath(parsed.data.CLIENT_WEB_RESET_PASSWORD_PATH),
   DEV_SHOW_LINKS: parsed.data.DEV_SHOW_LINKS === 'true',
   SMTP_SECURE: parsed.data.SMTP_SECURE === 'true',
+  APNS_ENABLED: hasCompleteApnsConfig,
   MEDIA_PUBLIC_BASE: normalizeMediaPublicBase(parsed.data.MEDIA_PUBLIC_BASE),
   MEDIA_VARIANT_WIDTHS: mediaVariantWidths
 };
