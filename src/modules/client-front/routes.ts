@@ -293,7 +293,12 @@ clientFrontRouter.post(
     }
 
     const entity = bodyValidation.data.entity.trim().toLowerCase();
-    if (!hasPermission(req, 'MANAGE_MEDIA') && entity !== 'specialists') {
+    const canUploadEntity =
+      hasPermission(req, 'MANAGE_MEDIA') ||
+      entity === 'specialists' ||
+      (entity === 'services' && hasPermission(req, 'EDIT_SERVICES'));
+
+    if (!canUploadEntity) {
       throw forbidden();
     }
 
@@ -380,7 +385,7 @@ clientFrontRouter.delete(
     const params = req.params as z.infer<typeof mediaAssetParamsSchema>;
     if (!hasPermission(req, 'MANAGE_MEDIA')) {
       const asset = await getMediaAsset(params.id);
-      if (asset.entity !== 'specialists') {
+      if (asset.entity !== 'specialists' && !(asset.entity === 'services' && hasPermission(req, 'EDIT_SERVICES'))) {
         throw forbidden();
       }
     }

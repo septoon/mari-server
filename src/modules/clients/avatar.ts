@@ -21,6 +21,11 @@ const clientAvatarMimeWhitelist: Record<string, Array<'jpeg' | 'png' | 'webp' | 
   'image/avif': ['avif']
 };
 
+const clientAvatarMimeAliases: Record<string, keyof typeof clientAvatarMimeWhitelist> = {
+  'image/pjpeg': 'image/jpeg',
+  'image/x-png': 'image/png'
+};
+
 export const clientAvatarUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -103,13 +108,16 @@ const buildClientAvatarRelativePath = (clientId: string, checksumSha256: string)
 };
 
 const writeClientAvatarFile = async (clientId: string, file: Express.Multer.File) => {
-  const mime = (file.mimetype ?? '').toLowerCase();
-  const acceptedMagicFormats = clientAvatarMimeWhitelist[mime];
+  const mime = clientAvatarMimeAliases[(file.mimetype ?? '').toLowerCase()] ?? (file.mimetype ?? '').toLowerCase();
+  const magicFormat = detectMagicFormat(file.buffer);
+  const acceptedMagicFormats =
+    clientAvatarMimeWhitelist[mime] ??
+    (mime === '' || mime === 'application/octet-stream' || mime.startsWith('image/') ? (magicFormat ? [magicFormat] : undefined) : undefined);
+
   if (!acceptedMagicFormats) {
     throw badRequest('Unsupported avatar mime type');
   }
 
-  const magicFormat = detectMagicFormat(file.buffer);
   if (!magicFormat || !acceptedMagicFormats.includes(magicFormat)) {
     throw badRequest('Avatar file signature does not match MIME type');
   }

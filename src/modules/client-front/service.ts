@@ -29,6 +29,11 @@ const MEDIA_MIME_WHITELIST: Record<string, Array<'jpeg' | 'png' | 'webp' | 'heic
   'image/avif': ['avif']
 };
 
+const MEDIA_MIME_ALIASES: Record<string, keyof typeof MEDIA_MIME_WHITELIST> = {
+  'image/pjpeg': 'image/jpeg',
+  'image/x-png': 'image/png'
+};
+
 type DbClient = typeof prisma | Prisma.TransactionClient;
 
 type DraftBlockInput = {
@@ -1408,14 +1413,16 @@ export const uploadMediaAsset = async (
   actorStaffId: string
 ) => {
   const normalizedEntity = entity.trim().toLowerCase();
-  const mime = (file.mimetype ?? '').toLowerCase();
-  const acceptedMagicFormats = MEDIA_MIME_WHITELIST[mime];
+  const mime = MEDIA_MIME_ALIASES[(file.mimetype ?? '').toLowerCase()] ?? (file.mimetype ?? '').toLowerCase();
+  const magicFormat = detectMagicFormat(file.buffer);
+  const acceptedMagicFormats =
+    MEDIA_MIME_WHITELIST[mime] ??
+    (mime === '' || mime === 'application/octet-stream' || mime.startsWith('image/') ? (magicFormat ? [magicFormat] : undefined) : undefined);
 
   if (!acceptedMagicFormats) {
     throw badRequest('Unsupported mime type');
   }
 
-  const magicFormat = detectMagicFormat(file.buffer);
   if (!magicFormat || !acceptedMagicFormats.includes(magicFormat)) {
     throw badRequest('File signature does not match MIME type');
   }

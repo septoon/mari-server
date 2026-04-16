@@ -418,6 +418,7 @@ model MediaAsset {
   createdByStaff                   Staff                     @relation("media_uploaded_by", fields: [createdByStaffId], references: [id], onDelete: Restrict)
   variants                         MediaVariant[]
   usages                           MediaUsage[]
+  serviceCategoryImageUsages       ServiceCategory[]         @relation("service_category_image")
   specialistPhotoDraftProfiles     ClientSpecialistProfile[] @relation("specialist_photo_draft")
   specialistPhotoPublishedProfiles ClientSpecialistProfile[] @relation("specialist_photo_published")
 
@@ -522,10 +523,14 @@ model PromoCodeRedemption {
 }
 
 model ServiceCategory {
-  id   String @id @default(uuid())
-  name String @unique
+  id           String      @id @default(uuid())
+  name         String      @unique
+  imageAssetId String?
 
-  services Service[]
+  imageAsset MediaAsset? @relation("service_category_image", fields: [imageAssetId], references: [id], onDelete: SetNull)
+  services   Service[]
+
+  @@index([imageAssetId])
 }
 
 model Service {
