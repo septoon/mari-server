@@ -246,6 +246,93 @@ const toMediaPublicUrl = (urlPath: string): string => {
   return `${env.MEDIA_PUBLIC_ORIGIN.replace(/\/+$/, '')}${urlPath}`;
 };
 
+const IMAGE_ASSET_KEY = 'imageAssetId';
+const IMAGE_URL_KEY = 'imageUrl';
+
+const isUuid = (value: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+
+const collectImageAssetIdsDeep = (value: unknown, ids: Set<string>) => {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectImageAssetIdsDeep(item, ids));
+    return;
+  }
+  if (!value || typeof value !== 'object') {
+    return;
+  }
+
+  const record = value as Record<string, unknown>;
+  const assetId = typeof record[IMAGE_ASSET_KEY] === 'string' ? record[IMAGE_ASSET_KEY] : null;
+  if (assetId && isUuid(assetId)) {
+    ids.add(assetId);
+  }
+
+  Object.values(record).forEach((item) => collectImageAssetIdsDeep(item, ids));
+};
+
+const resolveImageUrlForAsset = (asset: {
+  originalPath: string;
+  variants: Array<{ width: number; urlPath: string; path: string }>;
+}) => {
+  const preferred = [...asset.variants].sort((left, right) => left.width - right.width).at(-1) ?? null;
+  if (preferred?.urlPath) {
+    return toMediaPublicUrl(preferred.urlPath);
+  }
+  if (preferred?.path) {
+    return toMediaPublicUrl(toMediaUrlPath(preferred.path));
+  }
+  return toMediaPublicUrl(toMediaUrlPath(asset.originalPath));
+};
+
+const buildImageAssetUrlMap = async (value: unknown) => {
+  const ids = new Set<string>();
+  collectImageAssetIdsDeep(value, ids);
+
+  if (ids.size === 0) {
+    return new Map<string, string>();
+  }
+
+  const assets = await prisma.mediaAsset.findMany({
+    where: { id: { in: Array.from(ids) } },
+    select: {
+      id: true,
+      originalPath: true,
+      variants: {
+        select: {
+          width: true,
+          path: true,
+          urlPath: true,
+        },
+      },
+    },
+  });
+
+  return new Map(assets.map((asset) => [asset.id, resolveImageUrlForAsset(asset)]));
+};
+
+const attachImageUrlsDeep = (value: unknown, assetUrlMap: Map<string, string>): unknown => {
+  if (Array.isArray(value)) {
+    return value.map((item) => attachImageUrlsDeep(item, assetUrlMap));
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+
+  const record = value as Record<string, unknown>;
+  const nextRecord: Record<string, unknown> = {};
+
+  Object.entries(record).forEach(([key, item]) => {
+    nextRecord[key] = attachImageUrlsDeep(item, assetUrlMap);
+  });
+
+  const assetId = typeof record[IMAGE_ASSET_KEY] === 'string' ? record[IMAGE_ASSET_KEY] : null;
+  if (assetId && assetUrlMap.has(assetId)) {
+    nextRecord[IMAGE_URL_KEY] = assetUrlMap.get(assetId);
+  }
+
+  return nextRecord;
+};
+
 const getOrCreateClientAppConfig = async (db: DbClient = prisma) => {
   return db.clientAppConfig.upsert({
     where: { singleton: CLIENT_APP_CONFIG_SINGLETON },
@@ -287,12 +374,12 @@ const mapBlockToApi = (block: {
   releaseId: string | null;
   createdAt: Date;
   updatedAt: Date;
-}) => {
+}, assetUrlMap?: Map<string, string>) => {
   return {
     id: block.id,
     blockKey: block.blockKey,
     blockType: block.blockType,
-    payload: block.payload,
+    payload: assetUrlMap ? attachImageUrlsDeep(block.payload, assetUrlMap) : block.payload,
     sortOrder: block.sortOrder,
     status: block.status.toLowerCase(),
     platform: platformOutputMap[block.platform],
@@ -593,7 +680,8 @@ const filterBlocksForClient = (
   }>,
   platform: PlatformInput,
   appVersion: string | undefined,
-  at: Date
+  at: Date,
+  assetUrlMap?: Map<string, string>,
 ) => {
   const requestedPlatform = enumFromPlatformInput[platform];
 
@@ -603,7 +691,7 @@ const filterBlocksForClient = (
     .filter((block) => versionMatches(appVersion, block.minAppVersion, block.maxAppVersion))
     .filter((block) => timeMatches(at, block.startAt, block.endAt))
     .sort((a, b) => (a.sortOrder === b.sortOrder ? a.createdAt.getTime() - b.createdAt.getTime() : a.sortOrder - b.sortOrder))
-    .map(mapBlockToApi);
+    .map((block) => mapBlockToApi(block, assetUrlMap));
 };
 
 const writeAuditLog = async (
@@ -643,6 +731,10 @@ export const getDraftClientConfig = async (platform: PlatformInput, appVersion?:
       payload: block.payload
     }))
   );
+  const [extraAssetUrlMap, blockAssetUrlMap] = await Promise.all([
+    buildImageAssetUrlMap(migratedExtra),
+    buildImageAssetUrlMap(blocks.map((block) => block.payload)),
+  ]);
   const specialists = await listSpecialistCards(prisma, 'DRAFT', {
     includeHidden: false,
     onlyActive: true,
@@ -652,8 +744,14 @@ export const getDraftClientConfig = async (platform: PlatformInput, appVersion?:
   return {
     stage: 'draft',
     version: config.publishedVersion + 1,
-    config: buildDraftConfigPayload(config, platform, appVersion, at, migratedExtra),
-    blocks: filterBlocksForClient(blocks, platform, appVersion, at),
+    config: buildDraftConfigPayload(
+      config,
+      platform,
+      appVersion,
+      at,
+      attachImageUrlsDeep(migratedExtra, extraAssetUrlMap) as Record<string, unknown>,
+    ),
+    blocks: filterBlocksForClient(blocks, platform, appVersion, at, blockAssetUrlMap),
     specialists
   };
 };
@@ -807,6 +905,8 @@ export const getClientBootstrap = async (platform: PlatformInput, appVersion?: s
     readJsonObject(config.extraPublished),
     []
   );
+  const emptyBlockAssetUrlMap = new Map<string, string>();
+  const publishedExtraAssetUrlMap = await buildImageAssetUrlMap(publishedExtraWithoutBlocks);
 
   if (!config.publishedReleaseId) {
     const etag = createHash('sha256')
@@ -818,7 +918,10 @@ export const getClientBootstrap = async (platform: PlatformInput, appVersion?: s
             platform,
             appVersion,
             now,
-            publishedExtraWithoutBlocks
+            attachImageUrlsDeep(
+              publishedExtraWithoutBlocks,
+              publishedExtraAssetUrlMap,
+            ) as Record<string, unknown>,
           ),
           b: [],
           s: specialists
@@ -838,9 +941,12 @@ export const getClientBootstrap = async (platform: PlatformInput, appVersion?: s
           platform,
           appVersion,
           now,
-          publishedExtraWithoutBlocks
+          attachImageUrlsDeep(
+            publishedExtraWithoutBlocks,
+            publishedExtraAssetUrlMap,
+          ) as Record<string, unknown>
         ),
-        blocks: [],
+        blocks: filterBlocksForClient([], platform, appVersion, now, emptyBlockAssetUrlMap),
         specialists
       }
     };
@@ -862,13 +968,23 @@ export const getClientBootstrap = async (platform: PlatformInput, appVersion?: s
     throw notFound('Published release not found');
   }
 
-  const blocks = filterBlocksForClient(release.blocks, platform, appVersion, now);
   const publishedExtra = migrateLegacyBookingContent(
     readJsonObject(config.extraPublished),
     release.blocks.map((block) => ({
       blockType: block.blockType,
       payload: block.payload
     }))
+  );
+  const [publishedExtraResolvedMap, publishedBlockResolvedMap] = await Promise.all([
+    buildImageAssetUrlMap(publishedExtra),
+    buildImageAssetUrlMap(release.blocks.map((block) => block.payload)),
+  ]);
+  const blocks = filterBlocksForClient(
+    release.blocks,
+    platform,
+    appVersion,
+    now,
+    publishedBlockResolvedMap,
   );
 
   return {
@@ -883,7 +999,10 @@ export const getClientBootstrap = async (platform: PlatformInput, appVersion?: s
         platform,
         appVersion,
         now,
-        publishedExtra
+        attachImageUrlsDeep(
+          publishedExtra,
+          publishedExtraResolvedMap,
+        ) as Record<string, unknown>
       ),
       blocks,
       specialists
@@ -945,7 +1064,7 @@ export const listDraftBlocks = async () => {
     orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }]
   });
 
-  return rows.map(mapBlockToApi);
+  return rows.map((block) => mapBlockToApi(block));
 };
 
 export const createDraftBlock = async (payload: DraftBlockInput, actorStaffId: string) => {

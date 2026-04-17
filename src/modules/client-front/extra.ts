@@ -14,6 +14,7 @@ const sitePageHeroKeys = [
   'news',
   'newsArticle',
   'offers',
+  'privacyPolicy',
   'prices',
   'services',
   'serviceCategory',
@@ -25,7 +26,8 @@ const sitePageHeroKeySet = new Set<string>(sitePageHeroKeys);
 const pageHeroEntrySchema = z.object({
   eyebrow: z.string().trim().max(160).optional(),
   title: z.string().trim().max(200).optional(),
-  description: z.string().trim().max(1200).optional()
+  description: z.string().trim().max(1200).optional(),
+  imageAssetId: z.string().uuid().optional()
 });
 
 const bookingPageShortTextSchema = z.string().trim().min(1).max(240);
@@ -130,7 +132,8 @@ const homePageHeroSchema = z.object({
   secondaryCtaLabel: homePageShortTextSchema.optional(),
   visualLabel: homePageShortTextSchema.optional(),
   visualTitle: homePageTitleTextSchema.optional(),
-  visualSubtitle: homePageLongTextSchema.optional()
+  visualSubtitle: homePageLongTextSchema.optional(),
+  visualImageAssetId: z.string().uuid().optional()
 });
 
 const homePageActionSectionSchema = z.object({
@@ -191,7 +194,8 @@ const offerItemSchema = z.object({
   description: z.string().trim().min(1).max(3000),
   badge: z.string().trim().min(1).max(80),
   priceNote: z.string().trim().min(1).max(300),
-  ctaHref: z.string().trim().min(1).max(500)
+  ctaHref: z.string().trim().min(1).max(500),
+  imageAssetId: z.string().uuid().optional()
 });
 
 const newsArticleSchema = z.object({
@@ -200,7 +204,8 @@ const newsArticleSchema = z.object({
   category: z.string().trim().min(1).max(120),
   publishedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   excerpt: z.string().trim().min(1).max(2000),
-  body: z.array(z.string().trim().min(1).max(4000)).max(100)
+  body: z.array(z.string().trim().min(1).max(4000)).max(100),
+  imageAssetId: z.string().uuid().optional()
 });
 
 const locationInteriorMomentSchema = z.object({
@@ -218,6 +223,7 @@ const locationProfileSchema = z.object({
   mapUrl: z.string().trim().url().max(1000),
   description: z.string().trim().min(1).max(2000),
   note: z.string().trim().min(1).max(1200),
+  imageAssetId: z.string().uuid().optional(),
   serviceSlugs: z.array(z.string().trim().min(1).max(120)).max(200),
   masterSlugs: z.array(z.string().trim().min(1).max(120)).max(200),
   features: z.array(z.string().trim().min(1).max(200)).max(100),

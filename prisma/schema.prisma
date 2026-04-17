@@ -419,6 +419,7 @@ model MediaAsset {
   variants                         MediaVariant[]
   usages                           MediaUsage[]
   serviceCategoryImageUsages       ServiceCategory[]         @relation("service_category_image")
+  serviceImageUsages               Service[]                 @relation("service_image")
   specialistPhotoDraftProfiles     ClientSpecialistProfile[] @relation("specialist_photo_draft")
   specialistPhotoPublishedProfiles ClientSpecialistProfile[] @relation("specialist_photo_published")
 
@@ -537,6 +538,7 @@ model Service {
   id          String   @id @default(uuid())
   externalId  String?
   categoryId  String
+  imageAssetId String?
   name        String
   nameReceipt String?
   nameOnline  String?
@@ -547,11 +549,13 @@ model Service {
   isActive    Boolean  @default(true)
 
   category            ServiceCategory      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  imageAsset          MediaAsset?          @relation("service_image", fields: [imageAssetId], references: [id], onDelete: SetNull)
   staffServices       StaffService[]
   appointmentServices AppointmentService[]
 
   @@index([externalId])
   @@index([categoryId])
+  @@index([imageAssetId])
 }
 
 model StaffService {

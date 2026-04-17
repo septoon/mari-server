@@ -22,6 +22,7 @@ const servicePayloadSchema = z.object({
   name: z.string().trim().min(1),
   nameOnline: z.string().trim().min(1).optional().nullable(),
   categoryId: z.string().uuid(),
+  imageAssetId: z.string().uuid().nullable().optional(),
   description: z.string().trim().optional(),
   durationSec: z.coerce.number().int().min(60),
   priceMin: z.coerce.number().min(0),
@@ -47,6 +48,8 @@ type CategoryImageAsset = {
     path: string;
   }>;
 } | null;
+
+type ServiceImageAsset = CategoryImageAsset;
 
 const toMediaUrlPath = (relativePath: string): string => {
   const base = env.MEDIA_PUBLIC_BASE.startsWith('/')
@@ -100,6 +103,8 @@ const mapCategory = (category: {
 const mapService = (service: {
   id: string;
   externalId: string | null;
+  imageAssetId?: string | null;
+  imageAsset?: ServiceImageAsset;
   category: {
     id: string;
     name: string;
@@ -117,6 +122,8 @@ const mapService = (service: {
   id: service.id,
   externalId: service.externalId,
   category: mapCategory(service.category),
+  imageAssetId: service.imageAssetId ?? null,
+  imageUrl: resolveCategoryImageUrl(service.imageAsset ?? null),
   name: service.name,
   nameOnline: service.nameOnline,
   description: service.description,
@@ -146,6 +153,26 @@ const ensureCategoryImageAsset = async (imageAssetId?: string | null) => {
   return asset;
 };
 
+const ensureServiceImageAsset = async (imageAssetId?: string | null) => {
+  if (!imageAssetId) {
+    return null;
+  }
+
+  const asset = await prisma.mediaAsset.findUnique({
+    where: { id: imageAssetId },
+    select: {
+      id: true,
+      entity: true,
+    },
+  });
+
+  if (!asset || asset.entity !== 'services') {
+    throw notFound('Service image asset not found');
+  }
+
+  return asset;
+};
+
 const createServiceHandler = asyncHandler(async (req, res) => {
   const body = req.body as z.infer<typeof servicePayloadSchema>;
   const category = await prisma.serviceCategory.findUnique({
@@ -154,10 +181,12 @@ const createServiceHandler = asyncHandler(async (req, res) => {
   if (!category) {
     throw notFound('Category not found');
   }
+  await ensureServiceImageAsset(body.imageAssetId);
 
   const created = await prisma.service.create({
     data: {
       categoryId: body.categoryId,
+      imageAssetId: body.imageAssetId ?? null,
       name: body.name.trim(),
       nameOnline: body.nameOnline?.trim() || body.name.trim(),
       description: body.description?.trim() || null,
@@ -167,6 +196,9 @@ const createServiceHandler = asyncHandler(async (req, res) => {
       isActive: body.isActive ?? true,
     },
     include: {
+      imageAsset: {
+        include: buildCategoryImageInclude()
+      },
       category: {
         include: {
           imageAsset: {
@@ -186,6 +218,9 @@ servicesRouter.get(
     const items = await prisma.service.findMany({
       where: { isActive: true },
       include: {
+        imageAsset: {
+          include: buildCategoryImageInclude()
+        },
         category: {
           include: {
             imageAsset: {
@@ -214,6 +249,9 @@ servicesRouter.get(
   asyncHandler(async (_req, res) => {
     const items = await prisma.service.findMany({
       include: {
+        imageAsset: {
+          include: buildCategoryImageInclude()
+        },
         category: {
           include: {
             imageAsset: {
@@ -271,18 +309,20 @@ servicesRouter.patch(
     const { id } = req.params as z.infer<typeof idParamSchema>;
     const body = req.body as z.infer<typeof servicePayloadSchema>;
 
-    const category = await prisma.serviceCategory.findUnique({
-      where: { id: body.categoryId },
-    });
-    if (!category) {
-      throw notFound('Category not found');
-    }
+  const category = await prisma.serviceCategory.findUnique({
+    where: { id: body.categoryId },
+  });
+  if (!category) {
+    throw notFound('Category not found');
+  }
+  await ensureServiceImageAsset(body.imageAssetId);
 
-    try {
+  try {
       const updated = await prisma.service.update({
         where: { id },
         data: {
           categoryId: body.categoryId,
+          imageAssetId: body.imageAssetId ?? null,
           name: body.name.trim(),
           nameOnline: body.nameOnline?.trim() || body.name.trim(),
           description: body.description?.trim() || null,
@@ -293,6 +333,9 @@ servicesRouter.patch(
           isActive: body.isActive ?? true,
         },
         include: {
+          imageAsset: {
+            include: buildCategoryImageInclude()
+          },
           category: {
             include: {
               imageAsset: {
@@ -321,18 +364,20 @@ servicesRouter.put(
     const { id } = req.params as z.infer<typeof idParamSchema>;
     const body = req.body as z.infer<typeof servicePayloadSchema>;
 
-    const category = await prisma.serviceCategory.findUnique({
-      where: { id: body.categoryId },
-    });
-    if (!category) {
-      throw notFound('Category not found');
-    }
+  const category = await prisma.serviceCategory.findUnique({
+    where: { id: body.categoryId },
+  });
+  if (!category) {
+    throw notFound('Category not found');
+  }
+  await ensureServiceImageAsset(body.imageAssetId);
 
-    try {
+  try {
       const updated = await prisma.service.update({
         where: { id },
         data: {
           categoryId: body.categoryId,
+          imageAssetId: body.imageAssetId ?? null,
           name: body.name.trim(),
           nameOnline: body.nameOnline?.trim() || body.name.trim(),
           description: body.description?.trim() || null,
@@ -343,6 +388,9 @@ servicesRouter.put(
           isActive: body.isActive ?? true,
         },
         include: {
+          imageAsset: {
+            include: buildCategoryImageInclude()
+          },
           category: {
             include: {
               imageAsset: {
