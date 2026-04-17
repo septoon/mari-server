@@ -816,12 +816,13 @@ staffRouter.patch(
         where: { staffId: id },
         update: {
           photoAssetIdDraft: body.photoAssetId,
-          ...(body.photoAssetId === null ? { photoAssetIdPublished: null } : {}),
+          photoAssetIdPublished: body.photoAssetId,
           updatedByStaffId: actor.subjectId
         },
         create: {
           staffId: id,
           photoAssetIdDraft: body.photoAssetId,
+          photoAssetIdPublished: body.photoAssetId,
           updatedByStaffId: actor.subjectId
         }
       });

@@ -454,8 +454,8 @@ const getSpecialistStageData = (row: SpecialistStaffRow, stage: SpecialistStage)
     ctaText: profile?.ctaTextPublished ?? 'Записаться',
     isVisible: profile?.isVisiblePublished ?? true,
     sortOrder: profile?.sortOrderPublished ?? 0,
-    photoAssetId: profile?.photoAssetIdPublished ?? null,
-    photoAsset: profile?.photoPublished ?? null
+    photoAssetId: profile?.photoAssetIdPublished ?? profile?.photoAssetIdDraft ?? null,
+    photoAsset: profile?.photoPublished ?? profile?.photoDraft ?? null
   };
 };
 
