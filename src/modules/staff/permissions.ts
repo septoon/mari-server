@@ -9,7 +9,7 @@ export const STAFF_PERMISSION_CATALOG: StaffPermissionCatalogItem[] = [
   {
     code: 'VIEW_JOURNAL',
     title: 'Журнал: просмотр',
-    description: 'Доступ к журналу. Для мастера без доп. прав это только свои текущие и будущие записи',
+    description: 'Доступ к журналу. Без доп. прав сотрудник видит только свои текущие и будущие записи, а прошлые — за последние 2 месяца',
     group: 'workspace',
   },
   {

@@ -153,6 +153,19 @@ const buildDateRange = (from?: string, to?: string) => {
   return Object.keys(range).length > 0 ? range : undefined;
 };
 
+const JOURNAL_HISTORY_MONTHS = 2;
+
+const buildRestrictedJournalRange = (range?: { gte?: Date; lt?: Date }) => {
+  const historyStart = dayjs().tz(MSK_TZ).subtract(JOURNAL_HISTORY_MONTHS, 'month').startOf('day').utc().toDate();
+  const nextRange = { ...(range ?? {}) };
+
+  if (!nextRange.gte || nextRange.gte < historyStart) {
+    nextRange.gte = historyStart;
+  }
+
+  return nextRange;
+};
+
 const resolveClientBaseDiscount = (client: {
   discountType: DiscountType;
   discountValue: any;
@@ -619,11 +632,7 @@ appointmentsRouter.get(
   validateQuery(appointmentsListQuerySchema),
   asyncHandler(async (req, res) => {
     const actor = req.auth!;
-    if (actor.staffRole === 'MASTER') {
-      if (!hasPermission(req, 'VIEW_ALL_JOURNAL_APPOINTMENTS')) {
-        throw forbidden('MASTER can view full journal only with extra permission');
-      }
-    } else if (actor.staffRole !== 'OWNER' && !hasPermission(req, 'VIEW_JOURNAL')) {
+    if (actor.staffRole !== 'OWNER' && !hasPermission(req, 'VIEW_JOURNAL')) {
       throw forbidden('No permission to view journal');
     }
 
@@ -631,12 +640,16 @@ appointmentsRouter.get(
     const page = query.page;
     const limit = query.limit;
     const skip = (page - 1) * limit;
-    const startAt = buildDateRange(query.from, query.to);
+    const hasFullJournalAccess =
+      actor.staffRole === 'OWNER' || hasPermission(req, 'VIEW_ALL_JOURNAL_APPOINTMENTS');
+    const startAt = hasFullJournalAccess
+      ? buildDateRange(query.from, query.to)
+      : buildRestrictedJournalRange(buildDateRange(query.from, query.to));
     const canViewClientPhone = actor.staffRole !== 'MASTER' || hasPermission(req, 'VIEW_CLIENT_PHONE');
 
     const where = {
       ...(startAt ? { startAt } : {}),
-      ...(query.staffId ? { staffId: query.staffId } : {}),
+      staffId: hasFullJournalAccess ? (query.staffId ?? undefined) : actor.subjectId,
       ...(query.clientId ? { clientId: query.clientId } : {}),
       ...(query.status ? { status: query.status } : {})
     };
@@ -734,7 +747,10 @@ appointmentsRouter.get(
     const skip = (page - 1) * limit;
     const canViewClientPhone = hasPermission(req, 'VIEW_CLIENT_PHONE');
 
-    const startAt = buildDateRange(query.from, query.to) ?? { gte: todayStartMskUtc() };
+    const hasFullJournalAccess = hasPermission(req, 'VIEW_ALL_JOURNAL_APPOINTMENTS');
+    const startAt = hasFullJournalAccess
+      ? buildDateRange(query.from, query.to) ?? { gte: todayStartMskUtc() }
+      : buildRestrictedJournalRange(buildDateRange(query.from, query.to) ?? { gte: todayStartMskUtc() });
 
     const where = {
       staffId: req.auth!.subjectId,
