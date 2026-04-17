@@ -21,6 +21,7 @@ type TimeInterval = {
   endTime: string;
   bookingStartTime: string;
   bookingEndTime: string;
+  bookingSlotTimes: string[] | null;
 };
 
 const hhmmRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -32,6 +33,38 @@ const overlaps = (aStart: Date, aEnd: Date, bStart: Date, bEnd: Date): boolean =
 const timeToMinutes = (hhmm: string): number => {
   const [h, m] = hhmm.split(':').map((v) => Number(v));
   return h * 60 + m;
+};
+
+const normalizeBookingSlotTimes = (
+  value: unknown,
+  bookingStart: string,
+  bookingEnd: string
+): string[] | null => {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const bookingStartMinutes = timeToMinutes(bookingStart);
+  const bookingEndMinutes = timeToMinutes(bookingEnd);
+  const allowedMinutes = new Set<number>();
+  for (
+    let cursor = bookingStartMinutes;
+    cursor < bookingEndMinutes;
+    cursor += SLOT_STEP_MINUTES
+  ) {
+    allowedMinutes.add(cursor);
+  }
+  const unique = new Set<string>();
+
+  for (const raw of value) {
+    if (typeof raw !== 'string' || !hhmmRegex.test(raw)) continue;
+    const minutes = timeToMinutes(raw);
+    if (minutes < bookingStartMinutes || minutes >= bookingEndMinutes) continue;
+    if (!allowedMinutes.has(minutes)) continue;
+    unique.add(raw);
+  }
+
+  return [...unique].sort((left, right) => timeToMinutes(left) - timeToMinutes(right));
 };
 
 const toIntervalsFromJson = (value: Prisma.JsonValue): TimeInterval[] => {
@@ -62,7 +95,12 @@ const toIntervalsFromJson = (value: Prisma.JsonValue): TimeInterval[] => {
       startTime: start,
       endTime: end,
       bookingStartTime: bookingStart,
-      bookingEndTime: bookingEnd
+      bookingEndTime: bookingEnd,
+      bookingSlotTimes: normalizeBookingSlotTimes(
+        (raw as Record<string, unknown>).bookingSlotTimes,
+        bookingStart,
+        bookingEnd
+      )
     });
   }
 
@@ -114,7 +152,8 @@ const loadWorkingHoursIntervals = async (
     startTime: item.startTime,
     endTime: item.endTime,
     bookingStartTime: item.bookingStartTime || item.startTime,
-    bookingEndTime: item.bookingEndTime || item.endTime
+    bookingEndTime: item.bookingEndTime || item.endTime,
+    bookingSlotTimes: null
   }));
 };
 
@@ -229,7 +268,16 @@ export const fitsBookingHours = async (
   return intervals.some((interval) => {
     const intervalStart = mskDateToUtcByTime(date, interval.bookingStartTime);
     const intervalEnd = mskDateToUtcByTime(date, interval.bookingEndTime);
-    return startAt >= intervalStart && endAt <= intervalEnd;
+    if (!(startAt >= intervalStart && endAt <= intervalEnd)) {
+      return false;
+    }
+
+    if (interval.bookingSlotTimes !== null) {
+      const startTime = dayjs(startAt).tz(MSK_TZ).format('HH:mm');
+      return interval.bookingSlotTimes.includes(startTime);
+    }
+
+    return true;
   });
 };
 
@@ -256,6 +304,8 @@ export const listSlotsForStaff = async (
   for (const interval of intervals) {
     const intervalStart = mskDateToUtcByTime(date, interval.bookingStartTime);
     const intervalEnd = mskDateToUtcByTime(date, interval.bookingEndTime);
+    const allowedSlotTimes =
+      interval.bookingSlotTimes === null ? null : new Set(interval.bookingSlotTimes);
 
     for (
       let cursorMs = intervalStart.getTime();
@@ -266,6 +316,11 @@ export const listSlotsForStaff = async (
       const endAt = new Date(cursorMs + durationMs);
 
       if (startAt <= now) {
+        continue;
+      }
+
+      const startTime = dayjs(startAt).tz(MSK_TZ).format('HH:mm');
+      if (allowedSlotTimes && !allowedSlotTimes.has(startTime)) {
         continue;
       }
 

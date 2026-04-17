@@ -264,6 +264,10 @@ const siteContentSchema = z.object({
   policy: policyContentSchema.optional()
 });
 
+const siteVisibilitySchema = z.object({
+  hiddenBlockKeys: z.array(z.string().trim().min(1).max(160)).max(1000).optional()
+});
+
 const asObjectRecord = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
@@ -336,6 +340,15 @@ export const validateClientFrontExtra = (extra: Record<string, unknown>) => {
     }
 
     nextExtra.bookingPage = parsed.data;
+  }
+
+  if ('siteVisibility' in nextExtra) {
+    const parsed = siteVisibilitySchema.safeParse(nextExtra.siteVisibility);
+    if (!parsed.success) {
+      throw badRequest('Invalid siteVisibility payload', parsed.error.flatten());
+    }
+
+    nextExtra.siteVisibility = parsed.data;
   }
 
   return nextExtra;

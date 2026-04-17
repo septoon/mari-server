@@ -248,6 +248,12 @@ const toMediaPublicUrl = (urlPath: string): string => {
 
 const IMAGE_ASSET_KEY = 'imageAssetId';
 const IMAGE_URL_KEY = 'imageUrl';
+const IMAGE_ASSET_KEY_SUFFIX = 'imageassetid';
+
+const isImageAssetFieldKey = (key: string) => key.toLowerCase().endsWith(IMAGE_ASSET_KEY_SUFFIX);
+
+const resolveImageUrlFieldKey = (key: string) =>
+  key === IMAGE_ASSET_KEY ? IMAGE_URL_KEY : key.replace(/AssetId$/, 'Url');
 
 const isUuid = (value: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -262,10 +268,15 @@ const collectImageAssetIdsDeep = (value: unknown, ids: Set<string>) => {
   }
 
   const record = value as Record<string, unknown>;
-  const assetId = typeof record[IMAGE_ASSET_KEY] === 'string' ? record[IMAGE_ASSET_KEY] : null;
-  if (assetId && isUuid(assetId)) {
-    ids.add(assetId);
-  }
+  Object.entries(record).forEach(([key, item]) => {
+    if (!isImageAssetFieldKey(key) || typeof item !== 'string') {
+      return;
+    }
+
+    if (item && isUuid(item)) {
+      ids.add(item);
+    }
+  });
 
   Object.values(record).forEach((item) => collectImageAssetIdsDeep(item, ids));
 };
@@ -325,10 +336,13 @@ const attachImageUrlsDeep = (value: unknown, assetUrlMap: Map<string, string>): 
     nextRecord[key] = attachImageUrlsDeep(item, assetUrlMap);
   });
 
-  const assetId = typeof record[IMAGE_ASSET_KEY] === 'string' ? record[IMAGE_ASSET_KEY] : null;
-  if (assetId && assetUrlMap.has(assetId)) {
-    nextRecord[IMAGE_URL_KEY] = assetUrlMap.get(assetId);
-  }
+  Object.entries(record).forEach(([key, item]) => {
+    if (!isImageAssetFieldKey(key) || typeof item !== 'string' || !assetUrlMap.has(item)) {
+      return;
+    }
+
+    nextRecord[resolveImageUrlFieldKey(key)] = assetUrlMap.get(item);
+  });
 
   return nextRecord;
 };

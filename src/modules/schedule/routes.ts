@@ -13,6 +13,7 @@ import { asyncHandler } from '../../utils/async-handler';
 import { badRequest, notFound } from '../../utils/errors';
 import { ok } from '../../utils/response';
 import { MSK_TZ, parseDateOnlyToUtc } from '../../utils/time';
+import { SLOT_STEP_MINUTES } from './service';
 
 const hhmmRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -60,7 +61,8 @@ const dailyScheduleSchema = z.object({
         startTime: z.string().regex(hhmmRegex),
         endTime: z.string().regex(hhmmRegex),
         bookingStartTime: z.string().regex(hhmmRegex).optional(),
-        bookingEndTime: z.string().regex(hhmmRegex).optional()
+        bookingEndTime: z.string().regex(hhmmRegex).optional(),
+        bookingSlotTimes: z.array(z.string().regex(hhmmRegex)).max(288).optional()
       })
     )
     .max(50)
@@ -77,6 +79,41 @@ const timeToMinutes = (hhmm: string): number => {
   return h * 60 + m;
 };
 
+const normalizeBookingSlotTimes = (
+  value: string[] | undefined,
+  bookingStartTime: string,
+  bookingEndTime: string
+) => {
+  if (!value) {
+    return null;
+  }
+
+  const bookingStart = timeToMinutes(bookingStartTime);
+  const bookingEnd = timeToMinutes(bookingEndTime);
+  const allowedMinutes = new Set<number>();
+  for (let cursor = bookingStart; cursor < bookingEnd; cursor += SLOT_STEP_MINUTES) {
+    allowedMinutes.add(cursor);
+  }
+  const unique = new Set<string>();
+
+  for (const raw of value) {
+    const minutes = timeToMinutes(raw);
+    if (minutes < bookingStart || minutes >= bookingEnd) {
+      throw badRequest('Booking slot must be inside booking interval', {
+        slot: raw,
+        bookingStartTime,
+        bookingEndTime
+      });
+    }
+    if (!allowedMinutes.has(minutes)) {
+      throw badRequest(`Booking slot must match ${SLOT_STEP_MINUTES}-minute step`, { slot: raw });
+    }
+    unique.add(raw);
+  }
+
+  return [...unique].sort((left, right) => timeToMinutes(left) - timeToMinutes(right));
+};
+
 const readDailyIntervals = (
   value: unknown
 ): Array<{
@@ -84,6 +121,7 @@ const readDailyIntervals = (
   endTime: string;
   bookingStartTime: string;
   bookingEndTime: string;
+  bookingSlotTimes: string[] | null;
 }> => {
   if (!Array.isArray(value)) {
     return [];
@@ -94,6 +132,7 @@ const readDailyIntervals = (
     endTime: string;
     bookingStartTime: string;
     bookingEndTime: string;
+    bookingSlotTimes: string[] | null;
   }> = [];
 
   for (const raw of value) {
@@ -125,7 +164,14 @@ const readDailyIntervals = (
       startTime,
       endTime,
       bookingStartTime,
-      bookingEndTime
+      bookingEndTime,
+      bookingSlotTimes: normalizeBookingSlotTimes(
+        Array.isArray(record.bookingSlotTimes)
+          ? record.bookingSlotTimes.filter((item): item is string => typeof item === 'string')
+          : undefined,
+        bookingStartTime,
+        bookingEndTime
+      )
     });
   }
 
@@ -139,6 +185,7 @@ const serializeIntervals = (
     endTime: string;
     bookingStartTime?: string;
     bookingEndTime?: string;
+    bookingSlotTimes?: string[] | null;
   }>
 ) =>
   JSON.parse(JSON.stringify(items));
@@ -208,6 +255,7 @@ const validateIntervals = (
     endTime: string;
     bookingStartTime?: string;
     bookingEndTime?: string;
+    bookingSlotTimes?: string[] | null;
   }>
 ) => {
   validateWorkingHours(
@@ -261,7 +309,8 @@ const loadIntervalsForDate = async (staffId: string, date: string) => {
     startTime: item.startTime,
     endTime: item.endTime,
     bookingStartTime: item.bookingStartTime || item.startTime,
-    bookingEndTime: item.bookingEndTime || item.endTime
+    bookingEndTime: item.bookingEndTime || item.endTime,
+    bookingSlotTimes: null
   }));
 };
 
@@ -297,6 +346,7 @@ const expandScheduleItemsForRange = async (staffId: string, from: string, to: st
       endTime: string;
       bookingStartTime: string;
       bookingEndTime: string;
+      bookingSlotTimes: string[] | null;
     }>
   >();
   weeklyRows.forEach((item) => {
@@ -305,7 +355,8 @@ const expandScheduleItemsForRange = async (staffId: string, from: string, to: st
       startTime: item.startTime,
       endTime: item.endTime,
       bookingStartTime: item.bookingStartTime || item.startTime,
-      bookingEndTime: item.bookingEndTime || item.endTime
+      bookingEndTime: item.bookingEndTime || item.endTime,
+      bookingSlotTimes: null
     });
     weeklyByDay.set(item.dayOfWeek, current);
   });
@@ -317,6 +368,7 @@ const expandScheduleItemsForRange = async (staffId: string, from: string, to: st
       endTime: string;
       bookingStartTime: string;
       bookingEndTime: string;
+      bookingSlotTimes: string[] | null;
     }>
   >();
   dailyRows.forEach((row) => {
@@ -332,6 +384,7 @@ const expandScheduleItemsForRange = async (staffId: string, from: string, to: st
     endTime: string;
     bookingStartTime: string;
     bookingEndTime: string;
+    bookingSlotTimes?: string[] | null;
   }> = [];
 
   for (
@@ -350,7 +403,8 @@ const expandScheduleItemsForRange = async (staffId: string, from: string, to: st
         startTime: interval.startTime,
         endTime: interval.endTime,
         bookingStartTime: interval.bookingStartTime,
-        bookingEndTime: interval.bookingEndTime
+        bookingEndTime: interval.bookingEndTime,
+        bookingSlotTimes: interval.bookingSlotTimes
       });
     });
   }
@@ -430,7 +484,18 @@ scheduleRouter.put(
     const body = req.body as z.infer<typeof dailyScheduleSchema>;
     await assertStaffExists(staffId);
 
-    validateIntervals(body.items);
+    const normalizedItems = body.items.map((item) => ({
+      ...item,
+      bookingStartTime: item.bookingStartTime || item.startTime,
+      bookingEndTime: item.bookingEndTime || item.endTime,
+      bookingSlotTimes: normalizeBookingSlotTimes(
+        item.bookingSlotTimes,
+        item.bookingStartTime || item.startTime,
+        item.bookingEndTime || item.endTime
+      )
+    }));
+
+    validateIntervals(normalizedItems);
 
     const saved = await prisma.staffDailySchedule.upsert({
       where: {
@@ -440,12 +505,12 @@ scheduleRouter.put(
         }
       },
       update: {
-        intervals: serializeIntervals(body.items)
+        intervals: serializeIntervals(normalizedItems)
       },
       create: {
         staffId,
         date: parseDateOnlyToUtc(date),
-        intervals: serializeIntervals(body.items)
+        intervals: serializeIntervals(normalizedItems)
       }
     });
 
