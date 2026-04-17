@@ -45,7 +45,9 @@ const workingHoursSchema = z.object({
       z.object({
         dayOfWeek: z.number().int().min(0).max(7),
         startTime: z.string().regex(hhmmRegex),
-        endTime: z.string().regex(hhmmRegex)
+        endTime: z.string().regex(hhmmRegex),
+        bookingStartTime: z.string().regex(hhmmRegex).optional(),
+        bookingEndTime: z.string().regex(hhmmRegex).optional()
       })
     )
     .max(200)
@@ -56,7 +58,9 @@ const dailyScheduleSchema = z.object({
     .array(
       z.object({
         startTime: z.string().regex(hhmmRegex),
-        endTime: z.string().regex(hhmmRegex)
+        endTime: z.string().regex(hhmmRegex),
+        bookingStartTime: z.string().regex(hhmmRegex).optional(),
+        bookingEndTime: z.string().regex(hhmmRegex).optional()
       })
     )
     .max(50)
@@ -78,6 +82,8 @@ const readDailyIntervals = (
 ): Array<{
   startTime: string;
   endTime: string;
+  bookingStartTime: string;
+  bookingEndTime: string;
 }> => {
   if (!Array.isArray(value)) {
     return [];
@@ -86,6 +92,8 @@ const readDailyIntervals = (
   const items: Array<{
     startTime: string;
     endTime: string;
+    bookingStartTime: string;
+    bookingEndTime: string;
   }> = [];
 
   for (const raw of value) {
@@ -96,20 +104,43 @@ const readDailyIntervals = (
     const record = raw as Record<string, unknown>;
     const startTime = typeof record.startTime === 'string' ? record.startTime : '';
     const endTime = typeof record.endTime === 'string' ? record.endTime : '';
+    const bookingStartTime =
+      typeof record.bookingStartTime === 'string' ? record.bookingStartTime : startTime;
+    const bookingEndTime =
+      typeof record.bookingEndTime === 'string' ? record.bookingEndTime : endTime;
     if (!hhmmRegex.test(startTime) || !hhmmRegex.test(endTime)) {
       continue;
     }
-    if (timeToMinutes(endTime) <= timeToMinutes(startTime)) {
+    if (
+      timeToMinutes(endTime) <= timeToMinutes(startTime) ||
+      !hhmmRegex.test(bookingStartTime) ||
+      !hhmmRegex.test(bookingEndTime) ||
+      timeToMinutes(bookingEndTime) <= timeToMinutes(bookingStartTime) ||
+      timeToMinutes(bookingStartTime) < timeToMinutes(startTime) ||
+      timeToMinutes(bookingEndTime) > timeToMinutes(endTime)
+    ) {
       continue;
     }
-    items.push({ startTime, endTime });
+    items.push({
+      startTime,
+      endTime,
+      bookingStartTime,
+      bookingEndTime
+    });
   }
 
   items.sort((left, right) => timeToMinutes(left.startTime) - timeToMinutes(right.startTime));
   return items;
 };
 
-const serializeIntervals = (items: Array<{ startTime: string; endTime: string }>) =>
+const serializeIntervals = (
+  items: Array<{
+    startTime: string;
+    endTime: string;
+    bookingStartTime?: string;
+    bookingEndTime?: string;
+  }>
+) =>
   JSON.parse(JSON.stringify(items));
 
 const assertStaffExists = async (staffId: string) => {
@@ -128,14 +159,30 @@ const assertRangeValid = (startAt: Date, endAt: Date) => {
   }
 };
 
-const validateWorkingHours = (items: Array<{ dayOfWeek: number; startTime: string; endTime: string }>) => {
+const validateWorkingHours = (
+  items: Array<{
+    dayOfWeek: number;
+    startTime: string;
+    endTime: string;
+    bookingStartTime?: string;
+    bookingEndTime?: string;
+  }>
+) => {
   const byDay = new Map<number, Array<{ start: number; end: number }>>();
 
   for (const item of items) {
     const start = timeToMinutes(item.startTime);
     const end = timeToMinutes(item.endTime);
+    const bookingStart = timeToMinutes(item.bookingStartTime || item.startTime);
+    const bookingEnd = timeToMinutes(item.bookingEndTime || item.endTime);
     if (end <= start) {
       throw badRequest('Working hours interval must have endTime > startTime', { item });
+    }
+    if (bookingEnd <= bookingStart) {
+      throw badRequest('Booking interval must have bookingEndTime > bookingStartTime', { item });
+    }
+    if (bookingStart < start || bookingEnd > end) {
+      throw badRequest('Booking interval must be inside working hours interval', { item });
     }
 
     const ranges = byDay.get(item.dayOfWeek) ?? [];
@@ -155,16 +202,39 @@ const validateWorkingHours = (items: Array<{ dayOfWeek: number; startTime: strin
   }
 };
 
-const validateIntervals = (items: Array<{ startTime: string; endTime: string }>) => {
-  validateWorkingHours(items.map((item) => ({ dayOfWeek: 0, startTime: item.startTime, endTime: item.endTime })));
+const validateIntervals = (
+  items: Array<{
+    startTime: string;
+    endTime: string;
+    bookingStartTime?: string;
+    bookingEndTime?: string;
+  }>
+) => {
+  validateWorkingHours(
+    items.map((item) => ({
+      dayOfWeek: 0,
+      startTime: item.startTime,
+      endTime: item.endTime,
+      bookingStartTime: item.bookingStartTime,
+      bookingEndTime: item.bookingEndTime
+    }))
+  );
 };
 
 const normalizeWorkingHoursItems = (
-  items: Array<{ dayOfWeek: number; startTime: string; endTime: string }>
+  items: Array<{
+    dayOfWeek: number;
+    startTime: string;
+    endTime: string;
+    bookingStartTime?: string;
+    bookingEndTime?: string;
+  }>
 ) =>
   items.map((item) => ({
     ...item,
-    dayOfWeek: item.dayOfWeek === 7 ? 0 : item.dayOfWeek
+    dayOfWeek: item.dayOfWeek === 7 ? 0 : item.dayOfWeek,
+    bookingStartTime: item.bookingStartTime || item.startTime,
+    bookingEndTime: item.bookingEndTime || item.endTime
   }));
 
 const loadIntervalsForDate = async (staffId: string, date: string) => {
@@ -189,7 +259,9 @@ const loadIntervalsForDate = async (staffId: string, date: string) => {
 
   return weeklyRows.map((item) => ({
     startTime: item.startTime,
-    endTime: item.endTime
+    endTime: item.endTime,
+    bookingStartTime: item.bookingStartTime || item.startTime,
+    bookingEndTime: item.bookingEndTime || item.endTime
   }));
 };
 
@@ -218,14 +290,35 @@ const expandScheduleItemsForRange = async (staffId: string, from: string, to: st
     })
   ]);
 
-  const weeklyByDay = new Map<number, Array<{ startTime: string; endTime: string }>>();
+  const weeklyByDay = new Map<
+    number,
+    Array<{
+      startTime: string;
+      endTime: string;
+      bookingStartTime: string;
+      bookingEndTime: string;
+    }>
+  >();
   weeklyRows.forEach((item) => {
     const current = weeklyByDay.get(item.dayOfWeek) ?? [];
-    current.push({ startTime: item.startTime, endTime: item.endTime });
+    current.push({
+      startTime: item.startTime,
+      endTime: item.endTime,
+      bookingStartTime: item.bookingStartTime || item.startTime,
+      bookingEndTime: item.bookingEndTime || item.endTime
+    });
     weeklyByDay.set(item.dayOfWeek, current);
   });
 
-  const dailyByDate = new Map<string, Array<{ startTime: string; endTime: string }>>();
+  const dailyByDate = new Map<
+    string,
+    Array<{
+      startTime: string;
+      endTime: string;
+      bookingStartTime: string;
+      bookingEndTime: string;
+    }>
+  >();
   dailyRows.forEach((row) => {
     const dateKey = dayjs(row.date).tz(MSK_TZ).format('YYYY-MM-DD');
     dailyByDate.set(dateKey, readDailyIntervals(row.intervals));
@@ -237,6 +330,8 @@ const expandScheduleItemsForRange = async (staffId: string, from: string, to: st
     date: string;
     startTime: string;
     endTime: string;
+    bookingStartTime: string;
+    bookingEndTime: string;
   }> = [];
 
   for (
@@ -253,7 +348,9 @@ const expandScheduleItemsForRange = async (staffId: string, from: string, to: st
         dayOfWeek,
         date: dateKey,
         startTime: interval.startTime,
-        endTime: interval.endTime
+        endTime: interval.endTime,
+        bookingStartTime: interval.bookingStartTime,
+        bookingEndTime: interval.bookingEndTime
       });
     });
   }
@@ -291,7 +388,9 @@ scheduleRouter.get(
       id: item.id,
       dayOfWeek: item.dayOfWeek,
       startTime: item.startTime,
-      endTime: item.endTime
+      endTime: item.endTime,
+      bookingStartTime: item.bookingStartTime || item.startTime,
+      bookingEndTime: item.bookingEndTime || item.endTime
     }));
 
     return ok(res, {
@@ -383,7 +482,9 @@ scheduleRouter.put(
             staffId,
             dayOfWeek: item.dayOfWeek,
             startTime: item.startTime,
-            endTime: item.endTime
+            endTime: item.endTime,
+            bookingStartTime: item.bookingStartTime || item.startTime,
+            bookingEndTime: item.bookingEndTime || item.endTime
           }))
         });
       }
@@ -400,7 +501,9 @@ scheduleRouter.put(
         id: item.id,
         dayOfWeek: item.dayOfWeek,
         startTime: item.startTime,
-        endTime: item.endTime
+        endTime: item.endTime,
+        bookingStartTime: item.bookingStartTime || item.startTime,
+        bookingEndTime: item.bookingEndTime || item.endTime
       }))
     });
   })

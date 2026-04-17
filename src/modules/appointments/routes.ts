@@ -45,7 +45,13 @@ import {
   normalizeDiscount,
   resolveStaffCandidates
 } from './service';
-import { fitsWorkingHours, isStaffAvailable, listSlotsForStaff, SLOT_STEP_MINUTES } from '../schedule/service';
+import {
+  fitsBookingHours,
+  fitsWorkingHours,
+  isStaffAvailable,
+  listSlotsForStaff,
+  SLOT_STEP_MINUTES
+} from '../schedule/service';
 
 const slotsQuerySchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -220,11 +226,18 @@ const selectAvailableStaff = async (
   dateMsk: string,
   startAt: Date,
   endAt: Date,
-  excludeAppointmentId?: string
+  excludeAppointmentId?: string,
+  mode: 'working' | 'booking' = 'working'
 ): Promise<{ id: string; name: string } | null> => {
   for (const candidate of candidates) {
     const [fits, available] = await Promise.all([
-      fitsWorkingHours(candidate.id, dateMsk, startAt, endAt, db),
+      (mode === 'booking' ? fitsBookingHours : fitsWorkingHours)(
+        candidate.id,
+        dateMsk,
+        startAt,
+        endAt,
+        db
+      ),
       isStaffAvailable(candidate.id, startAt, endAt, excludeAppointmentId, db)
     ]);
     if (fits && available) {
@@ -455,7 +468,15 @@ appointmentsRouter.post(
       try {
         return await prisma.$transaction(
           async (tx) => {
-            const selectedStaff = await selectAvailableStaff(tx, candidates, dateMsk, startAt, endAt);
+            const selectedStaff = await selectAvailableStaff(
+              tx,
+              candidates,
+              dateMsk,
+              startAt,
+              endAt,
+              undefined,
+              req.auth?.subjectType === 'STAFF' ? 'working' : 'booking'
+            );
             if (!selectedStaff) {
               throw conflictSlot('No available staff for selected time');
             }
@@ -929,7 +950,15 @@ appointmentsRouter.patch(
       try {
         return await prisma.$transaction(
           async (tx) => {
-            const selected = await selectAvailableStaff(tx, candidates, dateMsk, startAt, endAt, appointment.id);
+            const selected = await selectAvailableStaff(
+              tx,
+              candidates,
+              dateMsk,
+              startAt,
+              endAt,
+              appointment.id,
+              req.auth?.subjectType === 'STAFF' ? 'working' : 'booking'
+            );
             if (!selected) {
               throw conflictSlot('No available staff for selected time');
             }

@@ -19,6 +19,8 @@ type Range = {
 type TimeInterval = {
   startTime: string;
   endTime: string;
+  bookingStartTime: string;
+  bookingEndTime: string;
 };
 
 const hhmmRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -43,9 +45,25 @@ const toIntervalsFromJson = (value: Prisma.JsonValue): TimeInterval[] => {
     const end = (raw as Record<string, unknown>).endTime;
     if (typeof start !== 'string' || typeof end !== 'string') continue;
     if (!hhmmRegex.test(start) || !hhmmRegex.test(end)) continue;
-    if (timeToMinutes(end) <= timeToMinutes(start)) continue;
+    const bookingStartRaw = (raw as Record<string, unknown>).bookingStartTime;
+    const bookingEndRaw = (raw as Record<string, unknown>).bookingEndTime;
+    const bookingStart = typeof bookingStartRaw === 'string' && hhmmRegex.test(bookingStartRaw) ? bookingStartRaw : start;
+    const bookingEnd = typeof bookingEndRaw === 'string' && hhmmRegex.test(bookingEndRaw) ? bookingEndRaw : end;
+    if (
+      timeToMinutes(end) <= timeToMinutes(start) ||
+      timeToMinutes(bookingEnd) <= timeToMinutes(bookingStart) ||
+      timeToMinutes(bookingStart) < timeToMinutes(start) ||
+      timeToMinutes(bookingEnd) > timeToMinutes(end)
+    ) {
+      continue;
+    }
 
-    items.push({ startTime: start, endTime: end });
+    items.push({
+      startTime: start,
+      endTime: end,
+      bookingStartTime: bookingStart,
+      bookingEndTime: bookingEnd
+    });
   }
 
   items.sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
@@ -94,11 +112,13 @@ const loadWorkingHoursIntervals = async (
 
   return hours.map((item) => ({
     startTime: item.startTime,
-    endTime: item.endTime
+    endTime: item.endTime,
+    bookingStartTime: item.bookingStartTime || item.startTime,
+    bookingEndTime: item.bookingEndTime || item.endTime
   }));
 };
 
-const loadAvailabilityIntervals = async (
+const loadScheduleIntervals = async (
   staffId: string,
   date: string,
   db: ScheduleDbClient = prisma
@@ -184,13 +204,31 @@ export const fitsWorkingHours = async (
   endAt: Date,
   db: ScheduleDbClient = prisma
 ): Promise<boolean> => {
-  const intervals = await loadAvailabilityIntervals(staffId, date, db);
+  const intervals = await loadScheduleIntervals(staffId, date, db);
 
   if (intervals.length === 0) return false;
 
   return intervals.some((interval) => {
     const intervalStart = mskDateToUtcByTime(date, interval.startTime);
     const intervalEnd = mskDateToUtcByTime(date, interval.endTime);
+    return startAt >= intervalStart && endAt <= intervalEnd;
+  });
+};
+
+export const fitsBookingHours = async (
+  staffId: string,
+  date: string,
+  startAt: Date,
+  endAt: Date,
+  db: ScheduleDbClient = prisma
+): Promise<boolean> => {
+  const intervals = await loadScheduleIntervals(staffId, date, db);
+
+  if (intervals.length === 0) return false;
+
+  return intervals.some((interval) => {
+    const intervalStart = mskDateToUtcByTime(date, interval.bookingStartTime);
+    const intervalEnd = mskDateToUtcByTime(date, interval.bookingEndTime);
     return startAt >= intervalStart && endAt <= intervalEnd;
   });
 };
@@ -205,7 +243,7 @@ export const listSlotsForStaff = async (
   const now = new Date();
 
   const [intervals, busyRanges] = await Promise.all([
-    loadAvailabilityIntervals(staffId, date, db),
+    loadScheduleIntervals(staffId, date, db),
     buildBusyRanges(staffId, dayStart, dayEnd, db)
   ]);
 
@@ -216,8 +254,8 @@ export const listSlotsForStaff = async (
   const durationMs = durationSec * 1000;
 
   for (const interval of intervals) {
-    const intervalStart = mskDateToUtcByTime(date, interval.startTime);
-    const intervalEnd = mskDateToUtcByTime(date, interval.endTime);
+    const intervalStart = mskDateToUtcByTime(date, interval.bookingStartTime);
+    const intervalEnd = mskDateToUtcByTime(date, interval.bookingEndTime);
 
     for (
       let cursorMs = intervalStart.getTime();
