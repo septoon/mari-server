@@ -253,14 +253,11 @@ clientAuthRouter.post(
         clientId = created.id;
       } else {
         const incomingName = body.name?.trim();
-        const nextName = !existingClient.name
-          ? (incomingName ?? null)
-          : ((incomingName?.length ?? 0) > existingClient.name.length ? incomingName : existingClient.name);
 
         const updated = await tx.client.update({
           where: { id: existingClient.id },
           data: {
-            name: nextName,
+            name: incomingName || null,
             phoneE164
           }
         });

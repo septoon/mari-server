@@ -143,6 +143,10 @@ const homePageActionSectionSchema = z.object({
   actionLabel: homePageShortTextSchema.optional()
 });
 
+const homePagePopularServicesSchema = homePageActionSectionSchema.extend({
+  itemsLimit: z.coerce.number().int().min(1).max(12).optional()
+});
+
 const homePageValuePillarSchema = z.object({
   title: homePageShortTextSchema.optional(),
   text: homePageLongTextSchema.optional()
@@ -178,7 +182,7 @@ const homePageBottomCtaSchema = z.object({
 
 const homePageSchema = z.object({
   hero: homePageHeroSchema.optional(),
-  categories: homePageActionSectionSchema.optional(),
+  categories: homePagePopularServicesSchema.optional(),
   valuePillars: homePageValuePillarsSchema.optional(),
   featuredServices: homePageActionSectionSchema.optional(),
   featuredSpecialists: homePageActionSectionSchema.optional(),

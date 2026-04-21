@@ -9,7 +9,7 @@ import {
   requireStaff,
   requireStaffRolesOrPermission,
 } from '../../middlewares/auth';
-import { validateBody, validateParams } from '../../middlewares/validate';
+import { validateBody, validateParams, validateQuery } from '../../middlewares/validate';
 import { asyncHandler } from '../../utils/async-handler';
 import { conflict, notFound } from '../../utils/errors';
 import { D, toNumber } from '../../utils/money';
@@ -45,6 +45,10 @@ const sectionPayloadSchema = z.object({
 
 const idParamSchema = z.object({
   id: z.string().uuid(),
+});
+
+const popularServicesQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(12).default(6),
 });
 
 type MediaImageAsset = {
@@ -326,6 +330,81 @@ const createServiceHandler = asyncHandler(async (req, res) => {
 
   return ok(res, { item: mapService(created) }, 201);
 });
+
+servicesRouter.get(
+  '/public/popular',
+  validateQuery(popularServicesQuerySchema),
+  asyncHandler(async (req, res) => {
+    const query = req.validatedQuery as z.infer<typeof popularServicesQuerySchema>;
+    const services = await prisma.service.findMany({
+      where: { isActive: true },
+      include: {
+        imageAsset: {
+          include: buildCategoryImageInclude()
+        },
+        category: {
+          include: {
+            imageAsset: {
+              include: buildCategoryImageInclude()
+            },
+            section: {
+              include: buildSectionInclude()
+            }
+          }
+        }
+      }
+    });
+
+    if (!services.length) {
+      return ok(res, { items: [] });
+    }
+
+    const serviceIds = services.map((item) => item.id);
+    const grouped = await prisma.appointmentService.groupBy({
+      by: ['serviceId'],
+      where: {
+        serviceId: {
+          in: serviceIds
+        }
+      },
+      _count: {
+        _all: true
+      }
+    });
+
+    const appointmentsCountByServiceId = new Map(
+      grouped
+        .filter((item): item is typeof item & { serviceId: string } => Boolean(item.serviceId))
+        .map((item) => [item.serviceId, item._count._all]),
+    );
+
+    const items = [...services]
+      .sort((left, right) => {
+        const leftCount = appointmentsCountByServiceId.get(left.id) ?? 0;
+        const rightCount = appointmentsCountByServiceId.get(right.id) ?? 0;
+
+        if (leftCount !== rightCount) {
+          return rightCount - leftCount;
+        }
+
+        const categoryCompare = left.category.name.localeCompare(right.category.name, 'ru');
+        if (categoryCompare !== 0) {
+          return categoryCompare;
+        }
+
+        const serviceCompare = left.name.localeCompare(right.name, 'ru');
+        if (serviceCompare !== 0) {
+          return serviceCompare;
+        }
+
+        return left.id.localeCompare(right.id);
+      })
+      .slice(0, query.limit)
+      .map(mapService);
+
+    return ok(res, { items });
+  })
+);
 
 servicesRouter.get(
   '/public',
