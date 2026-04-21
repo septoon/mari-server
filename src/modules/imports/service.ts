@@ -19,6 +19,7 @@ import { upsertClientByPhone } from '../clients/service';
 import { findOrCreateStaffByName } from '../staff/routes';
 import { D, zero } from '../../utils/money';
 import { MSK_TZ, parseDateOnlyToUtc } from '../../utils/time';
+import { findDefaultServiceSectionByCategoryName } from '../services/sections';
 
 type ImportType = 'CLIENTS' | 'SERVICES' | 'APPOINTMENTS' | 'SCHEDULE';
 
@@ -572,10 +573,29 @@ export const importServicesFromBuffer = async (
           continue;
         }
 
+        const defaultSection = findDefaultServiceSectionByCategoryName(categoryName);
+        if (defaultSection) {
+          await prisma.serviceSection.upsert({
+            where: { id: defaultSection.id },
+            update: {
+              name: defaultSection.name,
+              orderIndex: defaultSection.orderIndex
+            },
+            create: {
+              id: defaultSection.id,
+              name: defaultSection.name,
+              orderIndex: defaultSection.orderIndex
+            }
+          });
+        }
+
         const category = await prisma.serviceCategory.upsert({
           where: { name: categoryName },
           update: {},
-          create: { name: categoryName }
+          create: {
+            name: categoryName,
+            sectionId: defaultSection?.id ?? null
+          }
         });
 
         const externalId = externalIdRaw ? String(externalIdRaw) : null;

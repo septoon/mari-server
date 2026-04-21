@@ -418,6 +418,7 @@ model MediaAsset {
   createdByStaff                   Staff                     @relation("media_uploaded_by", fields: [createdByStaffId], references: [id], onDelete: Restrict)
   variants                         MediaVariant[]
   usages                           MediaUsage[]
+  serviceSectionImageUsages        ServiceSection[]           @relation("service_section_image")
   serviceCategoryImageUsages       ServiceCategory[]         @relation("service_category_image")
   serviceImageUsages               Service[]                 @relation("service_image")
   specialistPhotoDraftProfiles     ClientSpecialistProfile[] @relation("specialist_photo_draft")
@@ -527,11 +528,27 @@ model ServiceCategory {
   id           String      @id @default(uuid())
   name         String      @unique
   imageAssetId String?
+  sectionId    String?
 
-  imageAsset MediaAsset? @relation("service_category_image", fields: [imageAssetId], references: [id], onDelete: SetNull)
+  imageAsset MediaAsset?    @relation("service_category_image", fields: [imageAssetId], references: [id], onDelete: SetNull)
+  section    ServiceSection? @relation(fields: [sectionId], references: [id], onDelete: SetNull)
   services   Service[]
 
   @@index([imageAssetId])
+  @@index([sectionId])
+}
+
+model ServiceSection {
+  id           String   @id @default(uuid())
+  name         String   @unique
+  imageAssetId String?
+  orderIndex   Int      @default(0)
+
+  imageAsset MediaAsset?       @relation("service_section_image", fields: [imageAssetId], references: [id], onDelete: SetNull)
+  categories ServiceCategory[]
+
+  @@index([imageAssetId])
+  @@index([orderIndex])
 }
 
 model Service {
