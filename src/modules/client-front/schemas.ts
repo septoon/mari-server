@@ -273,6 +273,10 @@ export const specialistParamsSchema = z.object({
   staffId: z.string().uuid()
 });
 
+export const specialistRatingSchema = z.object({
+  value: z.number().int().min(1).max(5)
+});
+
 export const patchSpecialistProfileSchema = z
   .object({
     photoAssetId: z.string().uuid().nullable().optional(),

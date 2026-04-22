@@ -6,6 +6,7 @@ import { env } from '../../config/env';
 import {
   authenticateRequired,
   hasPermission,
+  requireClient,
   requirePermission,
   requireStaff,
   requireStaffRoles
@@ -26,6 +27,7 @@ import {
   patchSpecialistProfileSchema,
   previewQuerySchema,
   releaseListQuerySchema,
+  specialistRatingSchema,
   specialistParamsSchema,
   updateBlockSchema
 } from './schemas';
@@ -48,6 +50,7 @@ import {
   patchDraftSpecialistProfile,
   patchDraftClientConfig,
   publishClientFront,
+  submitSpecialistRating,
   updateDraftBlock,
   uploadMediaAsset
 } from './service';
@@ -149,6 +152,21 @@ clientFrontRouter.patch(
 
     const updated = await patchDraftSpecialistProfile(staffId, body, req.auth!.subjectId);
     return ok(res, updated);
+  })
+);
+
+clientFrontRouter.post(
+  '/specialists/:staffId/rating',
+  authenticateRequired,
+  requireClient,
+  validateParams(specialistParamsSchema),
+  validateBody(specialistRatingSchema),
+  asyncHandler(async (req, res) => {
+    const { staffId } = req.params as z.infer<typeof specialistParamsSchema>;
+    const body = req.body as z.infer<typeof specialistRatingSchema>;
+
+    const result = await submitSpecialistRating(staffId, req.auth!.subjectId, body.value);
+    return ok(res, result, 201);
   })
 );
 

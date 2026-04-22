@@ -17,6 +17,11 @@ import {
 } from './schemas';
 import { validateClientFrontExtra } from './extra';
 import { migrateLegacyBookingContent } from './legacy-booking-migration';
+import {
+  getSpecialistRatingStats,
+  listSpecialistRatingStats,
+  submitSpecialistRating as submitSpecialistRatingRecord
+} from '../specialist-ratings/service';
 
 const CLIENT_APP_CONFIG_SINGLETON = 'default';
 const MEDIA_MIME_WHITELIST: Record<string, Array<'jpeg' | 'png' | 'webp' | 'heic' | 'avif'>> = {
@@ -473,7 +478,11 @@ const getSpecialistStageData = (row: SpecialistStaffRow, stage: SpecialistStage)
   };
 };
 
-const buildSpecialistCard = (row: SpecialistStaffRow, stage: SpecialistStage) => {
+const buildSpecialistCard = (
+  row: SpecialistStaffRow,
+  stage: SpecialistStage,
+  ratingStats: { average: number | null; count: number }
+) => {
   const stageData = getSpecialistStageData(row, stage);
   const services = row.staffServices
     .filter((rowService) => rowService.service.isActive)
@@ -500,6 +509,7 @@ const buildSpecialistCard = (row: SpecialistStaffRow, stage: SpecialistStage) =>
     photoAssetId: stageData.photoAssetId,
     photo: mapSpecialistPhoto(stageData.photoAsset),
     services,
+    rating: ratingStats,
     isActive: row.isActive,
     firedAt: row.firedAt,
     updatedAt: row.specialistProfile?.updatedAt ?? row.updatedAt
@@ -527,9 +537,13 @@ const listSpecialistCards = async (
     include: specialistStaffInclude,
     orderBy: [{ name: 'asc' }]
   });
+  const ratingStatsByStaffId = await listSpecialistRatingStats(
+    db,
+    rows.map((row) => row.id)
+  );
 
   return rows
-    .map((row) => buildSpecialistCard(row, stage))
+    .map((row) => buildSpecialistCard(row, stage, getSpecialistRatingStats(ratingStatsByStaffId, row.id)))
     .filter((row) => options.includeHidden || row.isVisible)
     .filter((row) => !options.onlyWithServices || hasActiveServices(row))
     .sort((left, right) => {
@@ -811,6 +825,10 @@ export const listDraftSpecialistsForStaff = async () => {
     includeHidden: true,
     onlyActive: false
   });
+};
+
+export const submitSpecialistRating = async (staffId: string, clientId: string, value: number) => {
+  return submitSpecialistRatingRecord(prisma, staffId, clientId, value);
 };
 
 export const patchDraftSpecialistProfile = async (
@@ -1217,8 +1235,12 @@ export const publishClientFront = async (actorStaffId: string): Promise<PublishR
       include: specialistStaffInclude,
       orderBy: [{ name: 'asc' }]
     });
+    const ratingStatsByStaffId = await listSpecialistRatingStats(
+      tx,
+      specialistRows.map((row) => row.id)
+    );
     const specialistsSnapshot = specialistRows
-      .map((row) => buildSpecialistCard(row, 'DRAFT'))
+      .map((row) => buildSpecialistCard(row, 'DRAFT', getSpecialistRatingStats(ratingStatsByStaffId, row.id)))
       .filter((row) => hasActiveServices(row))
       .sort((left, right) => {
         if (left.sortOrder !== right.sortOrder) {

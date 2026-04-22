@@ -103,6 +103,7 @@ model Client {
   account          ClientAccount?
   appointments     Appointment[]
   promoRedemptions PromoCodeRedemption[]
+  specialistRatings SpecialistRating[]
 
   @@index([categoryId])
 }
@@ -175,6 +176,7 @@ model Staff {
   specialistProfile           ClientSpecialistProfile?
   specialistProfilesUpdated   ClientSpecialistProfile[] @relation("specialist_profile_updated_by")
   specialistProfilesPublished ClientSpecialistProfile[] @relation("specialist_profile_published_by")
+  specialistRatings           SpecialistRating[]
   pushDevices                 StaffPushDevice[]
 
   @@index([role])
@@ -399,6 +401,22 @@ model ClientSpecialistProfile {
   @@index([isVisiblePublished, sortOrderPublished])
   @@index([updatedByStaffId])
   @@index([publishedByStaffId])
+}
+
+model SpecialistRating {
+  id        String   @id @default(uuid())
+  clientId  String
+  staffId   String
+  value     Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  staff  Staff  @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@unique([clientId, staffId])
+  @@index([clientId])
+  @@index([staffId])
 }
 
 model MediaAsset {

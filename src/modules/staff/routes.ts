@@ -22,6 +22,7 @@ import { hashSecret, validatePin } from '../../utils/password';
 import { ok } from '../../utils/response';
 import { parseDateOnlyToUtc } from '../../utils/time';
 import { createSession, revokeAllSubjectSessions } from '../auth/service';
+import { getSpecialistRatingStats, listSpecialistRatingStats } from '../specialist-ratings/service';
 import {
   STAFF_PERMISSION_CATALOG,
   STAFF_PERMISSION_DESCRIPTION_BY_CODE,
@@ -237,6 +238,11 @@ const normalizeReceivesAllAppointmentNotifications = (staff: {
 const buildStaffProfileInclude = () =>
   Prisma.validator<Prisma.StaffInclude>()({
     position: true,
+    _count: {
+      select: {
+        appointments: true
+      }
+    },
     specialistProfile: {
       include: {
         photoDraft: {
@@ -275,7 +281,10 @@ type StaffProfileRow = Prisma.StaffGetPayload<{
   include: ReturnType<typeof buildStaffProfileInclude>;
 }>;
 
-const serializeStaffProfile = (row: StaffProfileRow) => ({
+const serializeStaffProfile = (
+  row: StaffProfileRow,
+  ratingStats: { average: number | null; count: number } = { average: null, count: 0 }
+) => ({
   id: row.id,
   name: row.name,
   role: row.role,
@@ -288,6 +297,9 @@ const serializeStaffProfile = (row: StaffProfileRow) => ({
   hiredAt: row.hiredAt,
   firedAt: row.firedAt,
   deletedAt: row.deletedAt,
+  ratingAverage: ratingStats.average,
+  ratingsCount: ratingStats.count,
+  appointmentsCount: row._count.appointments,
   position: row.position ? { id: row.position.id, name: row.position.name } : null,
   permissions: row.permissions.map((sp) => ({
     code: sp.permission.code,
@@ -312,7 +324,10 @@ staffRouter.get(
     }
 
     return ok(res, {
-      staff: serializeStaffProfile(staff)
+      staff: serializeStaffProfile(
+        staff,
+        getSpecialistRatingStats(await listSpecialistRatingStats(prisma, [staff.id]), staff.id)
+      )
     });
   })
 );
@@ -407,11 +422,17 @@ staffRouter.get(
         take: limit
       })
     ]);
+    const ratingStatsByStaffId = await listSpecialistRatingStats(
+      prisma,
+      items.map((item) => item.id)
+    );
 
     return ok(
       res,
       {
-        items: items.map(serializeStaffProfile)
+        items: items.map((item) =>
+          serializeStaffProfile(item, getSpecialistRatingStats(ratingStatsByStaffId, item.id))
+        )
       },
       200,
       {
