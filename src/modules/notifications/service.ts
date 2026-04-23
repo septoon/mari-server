@@ -245,6 +245,49 @@ const formatServiceNames = (appointment: AppointmentMailContext) =>
 
 const normalizeRecipientEmail = (value: string | null | undefined) => value?.trim().toLowerCase() || null;
 
+const buildAppointmentCommentLines = (appointment: AppointmentMailContext) => {
+  const comment = appointment?.comment?.trim();
+  return comment ? [`Комментарий к записи: ${comment}`] : [];
+};
+
+const resolveAssignedStaffEmail = async (staffId: string, fallbackEmail?: string | null) => {
+  const normalizedFallback = normalizeRecipientEmail(fallbackEmail);
+  if (normalizedFallback) {
+    return normalizedFallback;
+  }
+
+  const row = await prisma.staff.findUnique({
+    where: { id: staffId },
+    select: { email: true },
+  });
+
+  return normalizeRecipientEmail(row?.email);
+};
+
+const sendAssignedStaffNotificationEmail = async (input: {
+  appointmentId: string;
+  staffId: string;
+  fallbackEmail?: string | null;
+  notificationId: SupportedNotificationId;
+  dispatchKey: string;
+  subject: string;
+  lines: string[];
+  meta?: Prisma.InputJsonValue;
+}) => {
+  const recipientEmail = await resolveAssignedStaffEmail(input.staffId, input.fallbackEmail);
+  return sendNotificationEmail({
+    notificationId: input.notificationId,
+    dispatchKey: input.dispatchKey,
+    recipientEmail,
+    subject: input.subject,
+    lines: input.lines,
+    meta: input.meta ?? {
+      appointmentId: input.appointmentId,
+      audience: 'staff',
+    },
+  });
+};
+
 const listOwnerRecipients = async (): Promise<StaffEmailRecipient[]> => {
   const rows = await prisma.staff.findMany({
     where: {
@@ -556,6 +599,7 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
     `Ваша запись оформлена на ${appointmentDateTimeLabel(appointment)}.`,
     `Услуги: ${formatServiceNames(appointment)}.`,
     `Специалист: ${appointment.staff.name}.`,
+    ...buildAppointmentCommentLines(appointment),
   ];
 
   if (appointment.createdByType === ActorType.CLIENT) {
@@ -595,20 +639,24 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
             `Клиент ${appointment.client.name || appointment.client.phoneE164} создал запись на ${appointmentDateTimeLabel(appointment)}.`,
             `Специалист: ${appointment.staff.name}.`,
             `Услуги: ${formatServiceNames(appointment)}.`,
+            ...buildAppointmentCommentLines(appointment),
           ],
           meta: { appointmentId: appointment.id, audience: 'admins' },
         }),
       ),
     );
 
-    await sendNotificationEmail({
+    await sendAssignedStaffNotificationEmail({
+      appointmentId: appointment.id,
+      staffId: appointment.staff.id,
+      fallbackEmail: appointment.staff.email,
       notificationId: 'staff.clientBookingCreated',
       dispatchKey: `staff.clientBookingCreated:${appointment.id}:${appointment.staff.id}`,
-      recipientEmail: appointment.staff.email,
       subject: 'Клиент записался к вам',
       lines: [
         `Клиент ${appointment.client.name || appointment.client.phoneE164} записался к вам на ${appointmentDateTimeLabel(appointment)}.`,
         `Услуги: ${formatServiceNames(appointment)}.`,
+        ...buildAppointmentCommentLines(appointment),
       ],
       meta: { appointmentId: appointment.id, audience: 'staff' },
     });
@@ -636,6 +684,7 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
         `Клиент ${appointment.client.name || appointment.client.phoneE164} создал запись на ${appointmentDateTimeLabel(appointment)}.`,
         `Специалист: ${appointment.staff.name}.`,
         `Услуги: ${formatServiceNames(appointment)}.`,
+        ...buildAppointmentCommentLines(appointment),
       ],
     });
 
@@ -693,21 +742,25 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
           `Создана запись на ${appointmentDateTimeLabel(appointment)}.`,
           `Клиент: ${appointment.client.name || appointment.client.phoneE164}.`,
           `Специалист: ${appointment.staff.name}.`,
+          ...buildAppointmentCommentLines(appointment),
         ],
         meta: { appointmentId: appointment.id, audience: 'admins' },
       }),
     ),
   );
 
-  await sendNotificationEmail({
+  await sendAssignedStaffNotificationEmail({
+    appointmentId: appointment.id,
+    staffId: appointment.staff.id,
+    fallbackEmail: appointment.staff.email,
     notificationId: 'staff.adminBookingCreated',
     dispatchKey: `staff.adminBookingCreated:${appointment.id}:${appointment.staff.id}`,
-    recipientEmail: appointment.staff.email,
     subject: 'Администратор создал запись к вам',
     lines: [
       `Администратор создал запись на ${appointmentDateTimeLabel(appointment)}.`,
       `Клиент: ${appointment.client.name || appointment.client.phoneE164}.`,
       `Услуги: ${formatServiceNames(appointment)}.`,
+      ...buildAppointmentCommentLines(appointment),
     ],
     meta: { appointmentId: appointment.id, audience: 'staff' },
   });
@@ -737,6 +790,7 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
       `Клиент: ${appointment.client.name || appointment.client.phoneE164}.`,
       `Специалист: ${appointment.staff.name}.`,
       `Услуги: ${formatServiceNames(appointment)}.`,
+      ...buildAppointmentCommentLines(appointment),
     ],
   });
 
@@ -798,10 +852,12 @@ export const notifyOnAppointmentStatusChanged = async (input: {
       meta: { appointmentId: appointment.id },
     });
 
-    await sendNotificationEmail({
+    await sendAssignedStaffNotificationEmail({
+      appointmentId: appointment.id,
+      staffId: appointment.staff.id,
+      fallbackEmail: appointment.staff.email,
       notificationId: 'staff.bookingCancelled',
       dispatchKey: `staff.bookingCancelled:${appointment.id}:${appointment.staff.id}:${appointment.updatedAt.toISOString()}`,
-      recipientEmail: appointment.staff.email,
       subject: 'Запись отменена',
       lines: [
         `Запись клиента ${appointment.client.name || appointment.client.phoneE164} на ${appointmentDateTimeLabel(appointment)} отменена.`,
@@ -859,10 +915,12 @@ export const notifyOnAppointmentStatusChanged = async (input: {
       meta: { appointmentId: appointment.id },
     });
 
-    await sendNotificationEmail({
+    await sendAssignedStaffNotificationEmail({
+      appointmentId: appointment.id,
+      staffId: appointment.staff.id,
+      fallbackEmail: appointment.staff.email,
       notificationId: 'staff.noShowMarked',
       dispatchKey: `staff.noShowMarked:${appointment.id}:${appointment.staff.id}:${appointment.updatedAt.toISOString()}`,
-      recipientEmail: appointment.staff.email,
       subject: 'Запись отмечена как неявка',
       lines: [
         `Запись клиента ${appointment.client.name || appointment.client.phoneE164} на ${appointmentDateTimeLabel(appointment)} отмечена как «Клиент не пришёл».`,
@@ -973,10 +1031,12 @@ export const notifyOnAppointmentRescheduled = async (input: {
     );
   }
 
-  await sendNotificationEmail({
+  await sendAssignedStaffNotificationEmail({
+    appointmentId: appointment.id,
+    staffId: appointment.staff.id,
+    fallbackEmail: appointment.staff.email,
     notificationId: 'staff.bookingRescheduled',
     dispatchKey: `staff.bookingRescheduled:${appointment.id}:${appointment.staff.id}:${appointment.updatedAt.toISOString()}`,
-    recipientEmail: appointment.staff.email,
     subject: 'Запись перенесена',
     lines: [
       `Запись клиента ${appointment.client.name || appointment.client.phoneE164} перенесена на ${appointmentDateTimeLabel(appointment)}.`,
@@ -1061,10 +1121,12 @@ export const notifyOnClientCancelled = async (appointmentId: string) => {
     ),
   );
 
-  await sendNotificationEmail({
+  await sendAssignedStaffNotificationEmail({
+    appointmentId: appointment.id,
+    staffId: appointment.staff.id,
+    fallbackEmail: appointment.staff.email,
     notificationId: 'staff.bookingCancelled',
     dispatchKey: `staff.bookingCancelled:client:${appointment.id}:${appointment.staff.id}`,
-    recipientEmail: appointment.staff.email,
     subject: 'Клиент отменил запись',
     lines: [
       `Клиент ${appointment.client.name || appointment.client.phoneE164} отменил запись на ${appointmentDateTimeLabel(appointment)}.`,

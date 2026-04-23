@@ -675,6 +675,7 @@ model Appointment {
   paymentStatus          PaymentStatus
   paymentMethod          PaymentMethod
   paidAmount             Decimal           @db.Decimal(12, 2)
+  comment                String?
   createdByType          ActorType
   createdById            String?
   createdAt              DateTime          @default(now())

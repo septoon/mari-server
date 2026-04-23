@@ -477,6 +477,7 @@ appointmentsRouter.post(
     );
 
     const prices = calculatePrices(services, discount);
+    const appointmentComment = body.comment?.trim() || null;
     const appointment = await (async () => {
       try {
         return await prisma.$transaction(
@@ -516,6 +517,7 @@ appointmentsRouter.post(
                 paymentStatus: PaymentStatus.UNPAID,
                 paymentMethod: PaymentMethod.OTHER,
                 paidAmount: zero(),
+                comment: appointmentComment,
                 createdByType: req.auth?.subjectType === 'STAFF' ? ActorType.STAFF : ActorType.CLIENT,
                 createdById: req.auth?.subjectType === 'STAFF' ? req.auth.subjectId : client.id
               }
@@ -583,6 +585,7 @@ appointmentsRouter.post(
           status: appointment.status,
           startAt: appointment.startAt.toISOString(),
           endAt: appointment.endAt.toISOString(),
+          comment: appointment.comment,
           staff: {
             id: appointment.staff.id,
             name: appointment.staff.name
@@ -681,6 +684,7 @@ appointmentsRouter.get(
           status: row.status,
           startAt: row.startAt.toISOString(),
           endAt: row.endAt.toISOString(),
+          comment: row.comment,
           staff: {
             id: row.staff.id,
             name: row.staff.name
@@ -779,6 +783,7 @@ appointmentsRouter.get(
           status: row.status,
           startAt: row.startAt.toISOString(),
           endAt: row.endAt.toISOString(),
+          comment: row.comment,
           client: {
             id: row.client.id,
             name: row.client.name,
@@ -1256,6 +1261,7 @@ appointmentsRouter.get(
           status: row.status,
           startAt: row.startAt.toISOString(),
           endAt: row.endAt.toISOString(),
+          comment: row.comment,
           staff: {
             id: row.staff.id,
             name: row.staff.name
