@@ -158,14 +158,31 @@ const sendNotificationEmail = async (input: {
   subject: string;
   lines: string[];
   meta?: Prisma.InputJsonValue;
+  skipLogContext?: Record<string, unknown>;
 }) => {
   const email = input.recipientEmail?.trim().toLowerCase();
   if (!email) {
+    if (input.skipLogContext) {
+      console.warn('[NOTIFICATION_EMAIL_SKIPPED]', {
+        reason: 'missing_recipient_email',
+        notificationId: input.notificationId,
+        dispatchKey: input.dispatchKey,
+        ...input.skipLogContext,
+      });
+    }
     return false;
   }
 
   const { enabled } = await isNotificationEnabled(input.notificationId);
   if (!enabled) {
+    if (input.skipLogContext) {
+      console.warn('[NOTIFICATION_EMAIL_SKIPPED]', {
+        reason: 'notification_disabled',
+        notificationId: input.notificationId,
+        dispatchKey: input.dispatchKey,
+        ...input.skipLogContext,
+      });
+    }
     return false;
   }
 
@@ -174,6 +191,14 @@ const sendNotificationEmail = async (input: {
     select: { id: true },
   });
   if (existing) {
+    if (input.skipLogContext) {
+      console.warn('[NOTIFICATION_EMAIL_SKIPPED]', {
+        reason: 'duplicate_dispatch_key',
+        notificationId: input.notificationId,
+        dispatchKey: input.dispatchKey,
+        ...input.skipLogContext,
+      });
+    }
     return false;
   }
 
@@ -197,6 +222,14 @@ const sendNotificationEmail = async (input: {
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === 'P2002'
     ) {
+      if (input.skipLogContext) {
+        console.warn('[NOTIFICATION_EMAIL_SKIPPED]', {
+          reason: 'duplicate_dispatch_key_race',
+          notificationId: input.notificationId,
+          dispatchKey: input.dispatchKey,
+          ...input.skipLogContext,
+        });
+      }
       return false;
     }
     throw error;
@@ -284,6 +317,12 @@ const sendAssignedStaffNotificationEmail = async (input: {
     meta: input.meta ?? {
       appointmentId: input.appointmentId,
       audience: 'staff',
+      staffId: input.staffId,
+    },
+    skipLogContext: {
+      appointmentId: input.appointmentId,
+      staffId: input.staffId,
+      audience: 'assigned_staff',
     },
   });
 };
