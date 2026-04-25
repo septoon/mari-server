@@ -27,7 +27,13 @@ export const STAFF_PERMISSION_CATALOG: StaffPermissionCatalogItem[] = [
   {
     code: 'EDIT_JOURNAL',
     title: 'Журнал: редактирование',
-    description: 'Создание и изменение записей в журнале',
+    description: 'Создание записей и общие действия в журнале',
+    group: 'workspace',
+  },
+  {
+    code: 'EDIT_APPOINTMENTS',
+    title: 'Записи: редактирование',
+    description: 'Изменение существующих записей: клиент, сотрудник, дата, время, услуги, статус и комментарий',
     group: 'workspace',
   },
   {

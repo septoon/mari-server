@@ -133,6 +133,42 @@ const rescheduleSchema = z.object({
   anyStaff: z.boolean().optional()
 });
 
+const updateAppointmentSchema = z
+  .object({
+    clientId: z.string().uuid().optional(),
+    client: z
+      .object({
+        name: z.string().trim().min(1).optional(),
+        phone: z.string().trim().min(1).optional()
+      })
+      .optional(),
+    staffId: z.string().uuid().optional(),
+    serviceIds: z.array(z.string().uuid()).min(1).optional(),
+    startAt: z.string().datetime().optional(),
+    endAt: z.string().datetime().optional(),
+    status: z.nativeEnum(AppointmentStatus).optional(),
+    comment: z.union([z.string(), z.null()]).optional(),
+    payment: z
+      .object({
+        paidAmount: z.coerce.number().nonnegative().optional(),
+        method: z.nativeEnum(PaymentMethod).optional()
+      })
+      .optional()
+  })
+  .refine(
+    (value) =>
+      value.clientId !== undefined ||
+      value.client !== undefined ||
+      value.staffId !== undefined ||
+      value.serviceIds !== undefined ||
+      value.startAt !== undefined ||
+      value.endAt !== undefined ||
+      value.status !== undefined ||
+      value.comment !== undefined ||
+      value.payment !== undefined,
+    { message: 'At least one field is required' }
+  );
+
 const addPaymentSchema = z.object({
   amount: z.coerce.number().positive(),
   method: z.nativeEnum(PaymentMethod)
@@ -268,6 +304,94 @@ const mapSlotWriteError = (error: unknown): never => {
 
   throw error;
 };
+
+const mapPaymentStatus = (paidAmount: Prisma.Decimal, finalTotal: Prisma.Decimal) => {
+  if (paidAmount.equals(0)) {
+    return PaymentStatus.UNPAID;
+  }
+  return paidAmount.greaterThanOrEqualTo(finalTotal) ? PaymentStatus.PAID : PaymentStatus.PARTIAL;
+};
+
+const mapAppointmentForStaff = (appointment: {
+  id: string;
+  externalId: string;
+  status: AppointmentStatus;
+  startAt: Date;
+  endAt: Date;
+  comment: string | null;
+  baseTotalPrice: any;
+  discountAmountSnapshot: any;
+  finalTotalPrice: any;
+  paymentStatus: PaymentStatus;
+  paymentMethod: PaymentMethod;
+  paidAmount: any;
+  createdAt: Date;
+  updatedAt: Date;
+  staff: { id: string; name: string };
+  client: { id: string; name: string | null; phoneE164?: string };
+  appointmentServices: Array<{
+    id: string;
+    serviceId: string | null;
+    serviceNameSnapshot: string;
+    durationSnapshotSec: number;
+    priceSnapshot: any;
+    priceWithDiscountSnapshot: any;
+    sortOrder: number;
+  }>;
+  promoRedemption?: {
+    promoCode: { code: string };
+    discountTypeSnapshot: DiscountType;
+    discountValueSnapshot: any | null;
+    discountAmountSnapshot: any;
+  } | null;
+}, canViewClientPhone = true) => ({
+  id: appointment.id,
+  externalId: appointment.externalId,
+  status: appointment.status,
+  startAt: appointment.startAt.toISOString(),
+  endAt: appointment.endAt.toISOString(),
+  comment: appointment.comment,
+  staff: {
+    id: appointment.staff.id,
+    name: appointment.staff.name
+  },
+  client: {
+    id: appointment.client.id,
+    name: appointment.client.name,
+    phoneE164: canViewClientPhone ? appointment.client.phoneE164 : undefined
+  },
+  services: appointment.appointmentServices.map((service) => ({
+    id: service.id,
+    serviceId: service.serviceId,
+    name: service.serviceNameSnapshot,
+    durationSec: service.durationSnapshotSec,
+    price: toNumber(service.priceSnapshot),
+    priceWithDiscount: toNumber(service.priceWithDiscountSnapshot),
+    sortOrder: service.sortOrder
+  })),
+  prices: {
+    baseTotal: toNumber(appointment.baseTotalPrice),
+    discountAmount: toNumber(appointment.discountAmountSnapshot),
+    finalTotal: toNumber(appointment.finalTotalPrice)
+  },
+  payment: {
+    status: appointment.paymentStatus,
+    method: appointment.paymentMethod,
+    paidAmount: toNumber(appointment.paidAmount)
+  },
+  promo: appointment.promoRedemption
+    ? {
+        code: appointment.promoRedemption.promoCode.code,
+        discountType: appointment.promoRedemption.discountTypeSnapshot,
+        discountValue: appointment.promoRedemption.discountValueSnapshot
+          ? toNumber(appointment.promoRedemption.discountValueSnapshot)
+          : null,
+        discountAmount: toNumber(appointment.promoRedemption.discountAmountSnapshot)
+      }
+    : null,
+  createdAt: appointment.createdAt.toISOString(),
+  updatedAt: appointment.updatedAt.toISOString()
+});
 
 export const appointmentsRouter = Router();
 
@@ -806,11 +930,222 @@ appointmentsRouter.get(
   })
 );
 
+appointmentsRouter.patch(
+  '/appointments/:id',
+  authenticateRequired,
+  requireStaff,
+  requirePermission('EDIT_APPOINTMENTS'),
+  validateParams(idParamSchema),
+  validateBody(updateAppointmentSchema),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params as z.infer<typeof idParamSchema>;
+    const body = req.body as z.infer<typeof updateAppointmentSchema>;
+
+    const appointment = await prisma.appointment.findUnique({
+      where: { id },
+      include: {
+        appointmentServices: { orderBy: { sortOrder: 'asc' } },
+        client: true,
+        staff: true,
+        promoRedemption: { include: { promoCode: true } }
+      }
+    });
+    if (!appointment) {
+      throw notFound('Appointment not found');
+    }
+
+    const serviceIds =
+      body.serviceIds ??
+      appointment.appointmentServices
+        .map((service) => service.serviceId)
+        .filter((value): value is string => Boolean(value));
+    const services = body.serviceIds ? await getServicesSnapshot(body.serviceIds) : null;
+    const startAt = body.startAt ? new Date(body.startAt) : appointment.startAt;
+    const endAt = body.endAt
+      ? new Date(body.endAt)
+      : services
+        ? new Date(startAt.getTime() + getDurationSec(services) * 1000)
+        : appointment.endAt;
+
+    if (Number.isNaN(startAt.getTime()) || Number.isNaN(endAt.getTime())) {
+      throw badRequest('Invalid appointment datetime');
+    }
+    if (endAt <= startAt) {
+      throw badRequest('endAt must be greater than startAt');
+    }
+
+    const stepMs = SLOT_STEP_MINUTES * 60 * 1000;
+    if (startAt.getTime() % stepMs !== 0) {
+      throw badRequest(`startAt must be aligned to ${SLOT_STEP_MINUTES}-minute steps`);
+    }
+
+    let clientId = body.clientId ?? appointment.clientId;
+    if (body.clientId) {
+      const client = await prisma.client.findUnique({ where: { id: body.clientId } });
+      if (!client) {
+        throw notFound('Client not found');
+      }
+    }
+    if (body.client?.phone) {
+      const client = await upsertClientByPhone(
+        body.client.phone,
+        body.client.name ?? appointment.client.name
+      );
+      clientId = client.id;
+    } else if (body.client?.name && clientId === appointment.clientId) {
+      await prisma.client.update({
+        where: { id: appointment.clientId },
+        data: { name: body.client.name }
+      });
+    }
+
+    const staffChanged = body.staffId !== undefined && body.staffId !== appointment.staffId;
+    const timeChanged =
+      startAt.getTime() !== appointment.startAt.getTime() ||
+      endAt.getTime() !== appointment.endAt.getTime();
+    const servicesChanged = body.serviceIds !== undefined;
+    let staffId = body.staffId ?? appointment.staffId;
+
+    if (staffChanged || timeChanged || servicesChanged) {
+      const dateMsk = dayjs(startAt).tz(MSK_TZ).format('YYYY-MM-DD');
+      const candidates =
+        serviceIds.length > 0
+          ? await pickStaffCandidatesForReschedule(serviceIds, appointment.staffId, {
+              staffId,
+              anyStaff: false
+            })
+          : [{ id: staffId, name: appointment.staff.name }];
+      const selected = await selectAvailableStaff(
+        prisma as unknown as Prisma.TransactionClient,
+        candidates,
+        dateMsk,
+        startAt,
+        endAt,
+        appointment.id,
+        'working'
+      );
+      if (!selected) {
+        throw conflictSlot('No available staff for selected time');
+      }
+      staffId = selected.id;
+    }
+
+    const updated = await (async () => {
+      try {
+        return await prisma.$transaction(
+          async (tx) => {
+            let prices:
+              | ReturnType<typeof calculatePrices>
+              | null = null;
+
+            if (services) {
+              const discount = normalizeDiscount(
+                appointment.discountTypeSnapshot,
+                appointment.discountValueSnapshot,
+                undefined
+              );
+              prices = calculatePrices(services, discount);
+
+              await tx.appointmentService.deleteMany({ where: { appointmentId: appointment.id } });
+              await tx.appointmentService.createMany({
+                data: services.map((service, index) => ({
+                  appointmentId: appointment.id,
+                  serviceId: service.id,
+                  serviceNameSnapshot: service.name,
+                  durationSnapshotSec: service.durationSec,
+                  priceSnapshot: service.price,
+                  priceWithDiscountSnapshot: prices!.serviceFinalPrices[index]!,
+                  sortOrder: index + 1
+                }))
+              });
+
+              if (appointment.promoRedemption) {
+                await tx.promoCodeRedemption.update({
+                  where: { appointmentId: appointment.id },
+                  data: {
+                    discountTypeSnapshot: prices.discountTypeSnapshot,
+                    discountValueSnapshot: prices.discountValueSnapshot,
+                    discountAmountSnapshot: prices.discountAmount
+                  }
+                });
+              }
+            }
+
+            const finalTotal = prices?.finalTotal ?? appointment.finalTotalPrice;
+            const paidAmountRaw =
+              body.payment?.paidAmount !== undefined
+                ? D(body.payment.paidAmount)
+                : appointment.paidAmount;
+            const paidAmount = paidAmountRaw.greaterThan(finalTotal) ? finalTotal : maxZero(paidAmountRaw);
+
+            return tx.appointment.update({
+              where: { id: appointment.id },
+              data: {
+                clientId,
+                staffId,
+                startAt,
+                endAt,
+                ...(body.status ? { status: body.status } : {}),
+                ...(body.comment !== undefined ? { comment: body.comment?.trim() || null } : {}),
+                ...(prices
+                  ? {
+                      baseTotalPrice: prices.baseTotal,
+                      discountTypeSnapshot: prices.discountTypeSnapshot,
+                      discountValueSnapshot: prices.discountValueSnapshot,
+                      discountAmountSnapshot: prices.discountAmount,
+                      finalTotalPrice: prices.finalTotal
+                    }
+                  : {}),
+                ...(body.payment
+                  ? {
+                      paidAmount,
+                      paymentStatus: mapPaymentStatus(paidAmount, finalTotal),
+                      paymentMethod: body.payment.method ?? appointment.paymentMethod
+                    }
+                  : {})
+              },
+              include: {
+                appointmentServices: { orderBy: { sortOrder: 'asc' } },
+                client: true,
+                staff: true,
+                promoRedemption: { include: { promoCode: true } }
+              }
+            });
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+        );
+      } catch (error) {
+        return mapSlotWriteError(error);
+      }
+    })();
+
+    if (updated.startAt.getTime() !== appointment.startAt.getTime() || updated.staffId !== appointment.staffId) {
+      await notifyOnAppointmentRescheduled({
+        appointmentId: updated.id,
+        previousStartAt: appointment.startAt,
+        previousEndAt: appointment.endAt,
+        previousStaffName: appointment.staff.name,
+      });
+    }
+    if (body.status && body.status !== appointment.status) {
+      await notifyOnAppointmentStatusChanged({
+        appointmentId: updated.id,
+        previousStatus: appointment.status,
+        nextStatus: updated.status,
+      });
+    }
+
+    return ok(res, {
+      appointment: mapAppointmentForStaff(updated)
+    });
+  })
+);
+
 appointmentsRouter.delete(
   '/appointments/:id',
   authenticateRequired,
   requireStaff,
-  requirePermission('EDIT_JOURNAL'),
+  requirePermission('EDIT_APPOINTMENTS'),
   validateParams(idParamSchema),
   asyncHandler(async (req, res) => {
     const { id } = req.params as z.infer<typeof idParamSchema>;
@@ -850,31 +1185,18 @@ appointmentsRouter.patch(
   '/appointments/:id/status',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('MASTER', 'ADMIN', 'OWNER'),
-  requirePermission('EDIT_JOURNAL'),
+  requirePermission('EDIT_APPOINTMENTS'),
   validateParams(idParamSchema),
   validateBody(statusUpdateSchema),
   asyncHandler(async (req, res) => {
     const { id } = req.params as z.infer<typeof idParamSchema>;
     const body = req.body as z.infer<typeof statusUpdateSchema>;
-    const actor = req.auth!;
-
     const appointment = await prisma.appointment.findUnique({
       where: { id },
       include: { client: true, staff: true }
     });
     if (!appointment) {
       throw notFound('Appointment not found');
-    }
-
-    if (actor.staffRole === 'MASTER') {
-      if (appointment.staffId !== actor.subjectId) {
-        throw forbidden('MASTER can update only own appointments');
-      }
-      const allowedForMaster: AppointmentStatus[] = [AppointmentStatus.ARRIVED, AppointmentStatus.NO_SHOW];
-      if (!allowedForMaster.includes(body.status)) {
-        throw forbidden('MASTER can set only ARRIVED or NO_SHOW');
-      }
     }
 
     const updated = await prisma.appointment.update({
@@ -906,8 +1228,7 @@ appointmentsRouter.patch(
   '/appointments/:id/reschedule',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
-  requirePermission('EDIT_JOURNAL'),
+  requirePermission('EDIT_APPOINTMENTS'),
   validateParams(idParamSchema),
   validateBody(rescheduleSchema),
   asyncHandler(async (req, res) => {

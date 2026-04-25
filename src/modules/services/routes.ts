@@ -171,6 +171,15 @@ const mapService = (service: {
   priceMin: Prisma.Decimal;
   priceMax: Prisma.Decimal | null;
   isActive: boolean;
+  staffServices?: Array<{
+    staff: {
+      id: string;
+      name: string;
+      position?: {
+        name: string;
+      } | null;
+    };
+  }>;
 }) => ({
   id: service.id,
   externalId: service.externalId,
@@ -184,6 +193,11 @@ const mapService = (service: {
   priceMin: toNumber(service.priceMin),
   priceMax: service.priceMax ? toNumber(service.priceMax) : null,
   isActive: service.isActive,
+  providers: (service.staffServices ?? []).map((row) => ({
+    id: row.staff.id,
+    name: row.staff.name,
+    positionName: row.staff.position?.name ?? null
+  })),
 });
 
 const ensureCategoryImageAsset = async (imageAssetId?: string | null) => {
@@ -456,6 +470,26 @@ servicesRouter.get(
             },
             section: {
               include: buildSectionInclude()
+            }
+          }
+        },
+        staffServices: {
+          where: {
+            staff: {
+              deletedAt: null
+            }
+          },
+          include: {
+            staff: {
+              select: {
+                id: true,
+                name: true,
+                position: {
+                  select: {
+                    name: true
+                  }
+                }
+              }
             }
           }
         }

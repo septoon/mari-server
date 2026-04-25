@@ -8,6 +8,7 @@ const PERMISSIONS: Array<{ code: string; description: string }> = [
   { code: 'MANAGE_SERVICES', description: 'Create and update services' },
   { code: 'MANAGE_SCHEDULE', description: 'Manage working hours and blocks' },
   { code: 'MANAGE_APPOINTMENTS', description: 'Move and cancel appointments' },
+  { code: 'EDIT_APPOINTMENTS', description: 'Edit existing appointments' },
   { code: 'MANAGE_STAFF', description: 'Create staff and assign roles' },
   { code: 'VIEW_REPORTS', description: 'View analytical reports' },
   { code: 'VIEW_FINANCIAL_STATS', description: 'View financial statistics' },

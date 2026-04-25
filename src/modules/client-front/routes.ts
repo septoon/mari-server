@@ -9,7 +9,6 @@ import {
   requireClient,
   requirePermission,
   requireStaff,
-  requireStaffRoles
 } from '../../middlewares/auth';
 import { validateBody, validateParams, validateQuery } from '../../middlewares/validate';
 import { asyncHandler } from '../../utils/async-handler';
@@ -132,7 +131,7 @@ clientFrontRouter.get(
   '/staff/specialists',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requirePermission('MANAGE_CLIENT_FRONT'),
   asyncHandler(async (_req, res) => {
     const items = await listDraftSpecialistsForStaff();
     return ok(res, { items });
@@ -143,7 +142,7 @@ clientFrontRouter.patch(
   '/staff/specialists/:staffId',
   authenticateRequired,
   requireStaff,
-  requireStaffRoles('ADMIN', 'OWNER'),
+  requirePermission('MANAGE_CLIENT_FRONT'),
   validateParams(specialistParamsSchema),
   validateBody(patchSpecialistProfileSchema),
   asyncHandler(async (req, res) => {
