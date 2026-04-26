@@ -274,7 +274,7 @@ const loadAppointmentMailContext = async (appointmentId: string) => {
 };
 
 const formatServiceNames = (appointment: AppointmentMailContext) =>
-  appointment?.appointmentServices.map((item) => item.serviceNameSnapshot).join(', ') || 'Услуга';
+  appointment?.appointmentServices.map((item) => item.serviceNameSnapshot).join(', ') || 'Без услуги';
 
 const normalizeRecipientEmail = (value: string | null | undefined) => value?.trim().toLowerCase() || null;
 

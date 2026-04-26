@@ -6,6 +6,7 @@ import {
   PaymentStatus,
   Prisma
 } from '@prisma/client';
+import { randomUUID } from 'crypto';
 import dayjs from 'dayjs';
 import { Router } from 'express';
 import { z } from 'zod';
@@ -71,15 +72,16 @@ const slotDaysQuerySchema = z.object({
 const createAppointmentSchema = z.object({
   client: z
     .object({
-      name: z.string().min(1),
-      phone: z.string().min(1)
+      name: z.string().trim().optional(),
+      phone: z.string().trim().optional()
     })
     .optional(),
   clientId: z.string().uuid().optional(),
-  serviceIds: z.array(z.string().uuid()).min(1),
+  serviceIds: z.array(z.string().uuid()).default([]),
   staffId: z.string().uuid().optional(),
   anyStaff: z.boolean().optional(),
   startAt: z.string().datetime(),
+  endAt: z.string().datetime().optional(),
   comment: z.string().optional(),
   promoCode: z.string().min(1).optional(),
   discountOverride: z
@@ -143,7 +145,7 @@ const updateAppointmentSchema = z
       })
       .optional(),
     staffId: z.string().uuid().optional(),
-    serviceIds: z.array(z.string().uuid()).min(1).optional(),
+    serviceIds: z.array(z.string().uuid()).optional(),
     startAt: z.string().datetime().optional(),
     endAt: z.string().datetime().optional(),
     status: z.nativeEnum(AppointmentStatus).optional(),
@@ -228,6 +230,17 @@ const resolveClientBaseDiscount = (client: {
     type: client.discountType,
     value: client.discountValue
   };
+};
+
+const createAnonymousAppointmentClient = async (name?: string | null) => {
+  const suffix = randomUUID();
+  return prisma.client.create({
+    data: {
+      phone10: `anon-${suffix}`,
+      phoneE164: '',
+      name: name?.trim() || null
+    }
+  });
 };
 
 const pickStaffCandidatesForReschedule = async (
@@ -502,13 +515,19 @@ appointmentsRouter.post(
   validateBody(createAppointmentSchema),
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof createAppointmentSchema>;
+    const isStaffCreate = req.auth?.subjectType === 'STAFF';
+    const serviceIds = body.serviceIds ?? [];
 
     if (
-      req.auth?.subjectType === 'STAFF' &&
+      isStaffCreate &&
       !hasPermission(req, 'CREATE_JOURNAL_APPOINTMENTS') &&
       !hasPermission(req, 'EDIT_JOURNAL')
     ) {
       throw forbidden('No permission to edit journal');
+    }
+
+    if (!isStaffCreate && serviceIds.length === 0) {
+      throw badRequest('serviceIds must not be empty');
     }
 
     const startAt = new Date(body.startAt);
@@ -520,9 +539,19 @@ appointmentsRouter.post(
       throw badRequest(`startAt must be aligned to ${SLOT_STEP_MINUTES}-minute steps`);
     }
 
-    const services = await getServicesSnapshot(body.serviceIds);
-    const durationSec = getDurationSec(services);
-    const endAt = new Date(startAt.getTime() + durationSec * 1000);
+    const services = await getServicesSnapshot(serviceIds);
+    const endAt =
+      services.length > 0
+        ? new Date(startAt.getTime() + getDurationSec(services) * 1000)
+        : body.endAt
+          ? new Date(body.endAt)
+          : null;
+    if (!endAt || Number.isNaN(endAt.getTime())) {
+      throw badRequest('endAt is required when serviceIds is empty');
+    }
+    if (endAt <= startAt) {
+      throw badRequest('endAt must be greater than startAt');
+    }
     const dateMsk = dayjs(startAt).tz(MSK_TZ).format('YYYY-MM-DD');
 
     let client;
@@ -536,10 +565,15 @@ appointmentsRouter.post(
       client = await prisma.client.findUnique({ where: { id: req.auth.subjectId } });
       if (!client) throw notFound('Client not found');
     } else {
-      if (!body.client) {
+      const clientName = body.client?.name?.trim() || null;
+      const clientPhone = body.client?.phone?.trim() || '';
+      if (clientPhone) {
+        client = await upsertClientByPhone(clientPhone, clientName);
+      } else if (isStaffCreate) {
+        client = await createAnonymousAppointmentClient(clientName);
+      } else {
         throw badRequest('client or clientId is required');
       }
-      client = await upsertClientByPhone(body.client.phone, body.client.name);
     }
 
     if (body.discountOverride && body.promoCode) {
@@ -580,7 +614,7 @@ appointmentsRouter.post(
       };
     }
 
-    const candidates = await resolveStaffCandidates(body.serviceIds, body.staffId, body.anyStaff);
+    const candidates = await resolveStaffCandidates(serviceIds, body.staffId, body.anyStaff);
 
     const clientBaseDiscount = resolveClientBaseDiscount(client);
 
@@ -619,7 +653,7 @@ appointmentsRouter.post(
               throw conflictSlot('No available staff for selected time');
             }
 
-            const externalId = buildApiAppointmentExternalId(selectedStaff.id, client.id, startAt, [...body.serviceIds]);
+            const externalId = buildApiAppointmentExternalId(selectedStaff.id, client.id, startAt, [...serviceIds]);
             const exists = await tx.appointment.findUnique({ where: { externalId } });
             if (exists) {
               throw conflictSlot('Appointment with same payload already exists');
@@ -647,17 +681,19 @@ appointmentsRouter.post(
               }
             });
 
-            await tx.appointmentService.createMany({
-              data: services.map((service, index) => ({
-                appointmentId: created.id,
-                serviceId: service.id,
-                serviceNameSnapshot: service.name,
-                durationSnapshotSec: service.durationSec,
-                priceSnapshot: service.price,
-                priceWithDiscountSnapshot: prices.serviceFinalPrices[index]!,
-                sortOrder: index + 1
-              }))
-            });
+            if (services.length > 0) {
+              await tx.appointmentService.createMany({
+                data: services.map((service, index) => ({
+                  appointmentId: created.id,
+                  serviceId: service.id,
+                  serviceNameSnapshot: service.name,
+                  durationSnapshotSec: service.durationSec,
+                  priceSnapshot: service.price,
+                  priceWithDiscountSnapshot: prices.serviceFinalPrices[index]!,
+                  sortOrder: index + 1
+                }))
+              });
+            }
 
             if (promoToApply && prices.discountAmount.greaterThan(0)) {
               await tx.promoCodeRedemption.create({
@@ -1047,17 +1083,19 @@ appointmentsRouter.patch(
               prices = calculatePrices(services, discount);
 
               await tx.appointmentService.deleteMany({ where: { appointmentId: appointment.id } });
-              await tx.appointmentService.createMany({
-                data: services.map((service, index) => ({
-                  appointmentId: appointment.id,
-                  serviceId: service.id,
-                  serviceNameSnapshot: service.name,
-                  durationSnapshotSec: service.durationSec,
-                  priceSnapshot: service.price,
-                  priceWithDiscountSnapshot: prices!.serviceFinalPrices[index]!,
-                  sortOrder: index + 1
-                }))
-              });
+              if (services.length > 0) {
+                await tx.appointmentService.createMany({
+                  data: services.map((service, index) => ({
+                    appointmentId: appointment.id,
+                    serviceId: service.id,
+                    serviceNameSnapshot: service.name,
+                    durationSnapshotSec: service.durationSec,
+                    priceSnapshot: service.price,
+                    priceWithDiscountSnapshot: prices!.serviceFinalPrices[index]!,
+                    sortOrder: index + 1
+                  }))
+                });
+              }
 
               if (appointment.promoRedemption) {
                 await tx.promoCodeRedemption.update({

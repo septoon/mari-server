@@ -1,4 +1,5 @@
 import { DiscountType, Prisma } from '@prisma/client';
+import { randomUUID } from 'crypto';
 import { Router } from 'express';
 import { z } from 'zod';
 
@@ -14,6 +15,7 @@ import { validateBody, validateParams, validateQuery } from '../../middlewares/v
 import { asyncHandler } from '../../utils/async-handler';
 import { badRequest, notFound } from '../../utils/errors';
 import { D, toNumber } from '../../utils/money';
+import { hashSecret } from '../../utils/password';
 import { normalizePhone10, toPhoneE164 } from '../../utils/phone';
 import { ok } from '../../utils/response';
 import { notifyOnClientDiscountChanged } from '../notifications/service';
@@ -63,10 +65,20 @@ const updateDiscountSchema = z.object({
   discount: discountPayloadSchema
 });
 
+const nullableTrimmedString = (max: number) =>
+  z.union([z.string().trim().max(max), z.literal(''), z.null()]).optional();
+
+const createClientSchema = z.object({
+  name: nullableTrimmedString(255),
+  phone: z.union([z.string().trim(), z.literal(''), z.null()]).optional(),
+  email: z.union([z.string().trim().email(), z.literal(''), z.null()]).optional(),
+  comment: nullableTrimmedString(2000)
+});
+
 const updateClientSchema = z
   .object({
-    name: z.string().trim().min(1).max(255).optional(),
-    phone: z.string().trim().min(1).optional(),
+    name: nullableTrimmedString(255),
+    phone: z.union([z.string().trim(), z.literal(''), z.null()]).optional(),
     email: z.union([z.string().trim().email(), z.literal(''), z.null()]).optional(),
     comment: z.union([z.string().trim().max(2000), z.literal(''), z.null()]).optional()
   })
@@ -80,6 +92,8 @@ const updateClientSchema = z
       message: 'At least one field is required'
     }
   );
+
+const createSyntheticClientPhone10 = () => `client-${randomUUID()}`;
 
 const validateDiscountPayload = (payload: z.infer<typeof discountPayloadSchema>) => {
   if (payload.type === 'NONE') {
@@ -197,7 +211,16 @@ clientsRouter.get(
     const limit = query.limit;
     const skip = (page - 1) * limit;
 
-    const where = {
+    const where: Prisma.ClientWhereInput = {
+      AND: [
+        {
+          NOT: {
+            phone10: { startsWith: 'anon-' },
+            name: null,
+            phoneE164: ''
+          }
+        }
+      ],
       ...(query.categoryId ? { categoryId: query.categoryId } : {}),
       ...(query.search
         ? {
@@ -300,6 +323,90 @@ clientsRouter.get(
         temporaryDiscountTo: row.temporaryDiscountTo
       })
     );
+  })
+);
+
+clientsRouter.post(
+  '/',
+  authenticateRequired,
+  requireStaff,
+  requirePermission('EDIT_CLIENTS'),
+  validateBody(createClientSchema),
+  asyncHandler(async (req, res) => {
+    const body = req.body as z.infer<typeof createClientSchema>;
+
+    const nextName =
+      body.name === undefined || body.name === null || body.name === '' ? null : body.name.trim();
+    const nextComment =
+      body.comment === undefined || body.comment === null || body.comment === ''
+        ? null
+        : body.comment.trim();
+    const nextEmail =
+      body.email === undefined || body.email === null || body.email === ''
+        ? null
+        : body.email.trim().toLowerCase();
+    const phoneRaw =
+      body.phone === undefined || body.phone === null || body.phone.trim() === ''
+        ? null
+        : body.phone.trim();
+    const phone10 = phoneRaw ? normalizePhone10(phoneRaw) : createSyntheticClientPhone10();
+    const phoneE164 = phoneRaw ? toPhoneE164(phone10) : '';
+    const passwordHash = nextEmail ? await hashSecret(randomUUID()) : null;
+
+    try {
+      const created = await prisma.client.create({
+        data: {
+          name: nextName,
+          phone10,
+          phoneE164,
+          comment: nextComment,
+          ...(nextEmail && passwordHash
+            ? {
+                account: {
+                  create: {
+                    email: nextEmail,
+                    passwordHash
+                  }
+                }
+              }
+            : {})
+        },
+        include: {
+          category: true,
+          account: {
+            select: { email: true }
+          }
+        }
+      });
+
+      return ok(
+        res,
+        {
+          client: mapClientForAdmin({
+            id: created.id,
+            name: created.name,
+            phone10: created.phone10,
+            phoneE164: created.phoneE164,
+            email: created.account?.email ?? null,
+            avatarPath: created.avatarPath,
+            comment: created.comment,
+            category: created.category,
+            discountType: created.discountType,
+            discountValue: created.discountValue,
+            temporaryDiscountType: created.temporaryDiscountType,
+            temporaryDiscountValue: created.temporaryDiscountValue,
+            temporaryDiscountFrom: created.temporaryDiscountFrom,
+            temporaryDiscountTo: created.temporaryDiscountTo
+          })
+        },
+        201
+      );
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw badRequest('Phone or email already in use');
+      }
+      throw error;
+    }
   })
 );
 
@@ -424,7 +531,12 @@ clientsRouter.patch(
       throw notFound('Client not found');
     }
 
-    const nextName = body.name === undefined ? undefined : body.name.trim();
+    const nextName =
+      body.name === undefined
+        ? undefined
+        : body.name === null || body.name === ''
+          ? null
+          : body.name.trim();
     const nextComment =
       body.comment === undefined
         ? undefined
@@ -446,18 +558,25 @@ clientsRouter.patch(
     } = {};
 
     if (nextName !== undefined) {
-      updatePayload.name = nextName || null;
+      updatePayload.name = nextName;
     }
     if (nextComment !== undefined) {
       updatePayload.comment = nextComment;
     }
     if (body.phone !== undefined) {
-      const normalizedPhone10 = normalizePhone10(body.phone);
-      updatePayload.phone10 = normalizedPhone10;
-      updatePayload.phoneE164 = toPhoneE164(normalizedPhone10);
+      if (body.phone === null || body.phone.trim() === '') {
+        updatePayload.phone10 = createSyntheticClientPhone10();
+        updatePayload.phoneE164 = '';
+      } else {
+        const normalizedPhone10 = normalizePhone10(body.phone);
+        updatePayload.phone10 = normalizedPhone10;
+        updatePayload.phoneE164 = toPhoneE164(normalizedPhone10);
+      }
     }
 
     try {
+      const passwordHashForNewAccount =
+        nextEmail && !existing.account ? await hashSecret(randomUUID()) : null;
       const updated = await prisma.$transaction(async (tx) => {
         if (nextEmail !== undefined) {
           const account = await tx.clientAccount.findUnique({
@@ -470,7 +589,13 @@ clientsRouter.patch(
               data: { email: nextEmail }
             });
           } else if (nextEmail) {
-            throw badRequest('Client has no account to store email');
+            await tx.clientAccount.create({
+              data: {
+                clientId: id,
+                email: nextEmail,
+                passwordHash: passwordHashForNewAccount ?? (await hashSecret(randomUUID()))
+              }
+            });
           }
         }
 

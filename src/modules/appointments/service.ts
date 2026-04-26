@@ -19,7 +19,7 @@ export type DiscountOverrideInput = {
 
 export const getServicesSnapshot = async (serviceIds: string[]): Promise<ServiceSnapshot[]> => {
   if (!serviceIds.length) {
-    throw badRequest('serviceIds must not be empty');
+    return [];
   }
 
   const uniqueIds = Array.from(new Set(serviceIds));
