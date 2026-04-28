@@ -196,6 +196,38 @@ const homePageSchema = z.object({
   bottomCta: homePageBottomCtaSchema.optional()
 });
 
+const pricesPageSchema = z.object({
+  seo: z
+    .object({
+      title: homePageTitleTextSchema.optional(),
+      description: homePageLongTextSchema.optional()
+    })
+    .optional(),
+  heroActions: z
+    .object({
+      primaryLabel: homePageShortTextSchema.optional()
+    })
+    .optional(),
+  catalog: z
+    .object({
+      eyebrow: homePageShortTextSchema.optional(),
+      title: homePageTitleTextSchema.optional(),
+      description: homePageLongTextSchema.optional(),
+      emptyTitle: homePageTitleTextSchema.optional(),
+      emptyDescription: homePageLongTextSchema.optional()
+    })
+    .optional(),
+  bottomCta: z
+    .object({
+      eyebrow: homePageShortTextSchema.optional(),
+      title: homePageTitleTextSchema.optional(),
+      description: homePageLongTextSchema.optional(),
+      primaryCtaLabel: homePageShortTextSchema.optional(),
+      secondaryCtaLabel: homePageShortTextSchema.optional()
+    })
+    .optional()
+});
+
 const offerItemSchema = z.object({
   slug: z.string().trim().min(1).max(120).regex(/^[a-z0-9-]+$/),
   title: z.string().trim().min(1).max(180),
@@ -265,13 +297,16 @@ const policyContentSchema = z.object({
   sections: z.array(policySectionSchema).max(50).optional()
 });
 
-const siteContentSchema = z.object({
-  homePage: homePageSchema.optional(),
-  offers: z.array(offerItemSchema).max(200).optional(),
-  news: z.array(newsArticleSchema).max(500).optional(),
-  locations: z.array(locationProfileSchema).max(200).optional(),
-  policy: policyContentSchema.optional()
-});
+const siteContentSchema = z
+  .object({
+    homePage: homePageSchema.optional(),
+    pricesPage: pricesPageSchema.optional(),
+    offers: z.array(offerItemSchema).max(200).optional(),
+    news: z.array(newsArticleSchema).max(500).optional(),
+    locations: z.array(locationProfileSchema).max(200).optional(),
+    policy: policyContentSchema.optional()
+  })
+  .passthrough();
 
 const siteVisibilitySchema = z.object({
   hiddenBlockKeys: z.array(z.string().trim().min(1).max(160)).max(1000).optional()
