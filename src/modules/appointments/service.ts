@@ -47,6 +47,23 @@ export const getDurationSec = (services: ServiceSnapshot[]): number => {
   return services.reduce((acc, service) => acc + service.durationSec, 0);
 };
 
+export const getClientVisibleStaffWhere = (): Prisma.StaffWhereInput => ({
+  isActive: true,
+  firedAt: null,
+  role: StaffRole.MASTER,
+  staffServices: {
+    some: {
+      service: {
+        isActive: true
+      }
+    }
+  },
+  OR: [
+    { specialistProfile: { is: null } },
+    { specialistProfile: { is: { isVisiblePublished: true } } }
+  ]
+});
+
 const staffCanProvideServices = async (staffId: string, serviceIds: string[]): Promise<boolean> => {
   const totalMappings = await prisma.staffService.count({ where: { staffId } });
   if (totalMappings === 0) {
@@ -67,10 +84,16 @@ const staffCanProvideServices = async (staffId: string, serviceIds: string[]): P
 export const resolveStaffCandidates = async (
   serviceIds: string[],
   staffId?: string,
-  anyStaff?: boolean
+  anyStaff?: boolean,
+  options: { clientVisibleOnly?: boolean } = {}
 ): Promise<Array<{ id: string; name: string; role: StaffRole }>> => {
   if (staffId) {
-    const staff = await prisma.staff.findUnique({ where: { id: staffId } });
+    const staff = await prisma.staff.findFirst({
+      where: {
+        ...(options.clientVisibleOnly ? getClientVisibleStaffWhere() : {}),
+        id: staffId
+      }
+    });
     if (!staff || !staff.isActive || staff.firedAt) {
       throw notFound('Staff not found or inactive');
     }
@@ -87,7 +110,9 @@ export const resolveStaffCandidates = async (
   }
 
   const staff = await prisma.staff.findMany({
-      where: {
+    where: options.clientVisibleOnly
+      ? getClientVisibleStaffWhere()
+      : {
         isActive: true,
         firedAt: null,
         role: { in: ['MASTER', 'ADMIN', 'OWNER', 'DEVELOPER', 'SMM'] }
