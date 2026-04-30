@@ -1013,7 +1013,7 @@ appointmentsRouter.get(
     const hasFullJournalAccess = hasPermission(req, 'VIEW_ALL_JOURNAL_APPOINTMENTS');
     const startAt = hasFullJournalAccess
       ? buildDateRange(query.from, query.to) ?? { gte: todayStartMskUtc() }
-      : buildRestrictedJournalRange(buildDateRange(query.from, query.to) ?? { gte: todayStartMskUtc() });
+      : buildRestrictedJournalRange(buildDateRange(query.from, query.to));
 
     const where = {
       staffId: req.auth!.subjectId,
