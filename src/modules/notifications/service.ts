@@ -264,6 +264,7 @@ const loadAppointmentMailContext = async (appointmentId: string) => {
       appointmentServices: {
         orderBy: { sortOrder: 'asc' },
         select: {
+          serviceId: true,
           serviceNameSnapshot: true,
           priceSnapshot: true,
           priceWithDiscountSnapshot: true,
@@ -281,6 +282,24 @@ const normalizeRecipientEmail = (value: string | null | undefined) => value?.tri
 const buildAppointmentCommentLines = (appointment: AppointmentMailContext) => {
   const comment = appointment?.comment?.trim();
   return comment ? [`Комментарий к записи: ${comment}`] : [];
+};
+
+type AppointmentEditServiceSnapshot = {
+  serviceId: string | null;
+  serviceNameSnapshot: string;
+};
+
+type AppointmentEditSnapshot = {
+  clientId: string;
+  clientName: string | null;
+  clientPhoneE164: string;
+  staffId: string;
+  staffName: string;
+  staffEmail: string | null;
+  startAt: Date;
+  endAt: Date;
+  comment: string | null;
+  services: AppointmentEditServiceSnapshot[];
 };
 
 const resolveAssignedStaffEmail = async (staffId: string, fallbackEmail?: string | null) => {
@@ -324,6 +343,206 @@ const sendAssignedStaffNotificationEmail = async (input: {
       staffId: input.staffId,
       audience: 'assigned_staff',
     },
+  });
+};
+
+const appointmentDateLabel = (date: Date) => formatDateMsk(date, 'DD.MM.YYYY');
+const appointmentTimeRangeLabel = (startAt: Date, endAt: Date) =>
+  `${formatDateMsk(startAt, 'HH:mm')}-${formatDateMsk(endAt, 'HH:mm')}`;
+
+const clientDisplayName = (client: { name: string | null; phoneE164: string }) =>
+  client.name || client.phoneE164;
+
+const serviceIdentity = (service: AppointmentEditServiceSnapshot) =>
+  service.serviceId ?? service.serviceNameSnapshot.trim().toLowerCase();
+
+const serviceNames = (services: AppointmentEditServiceSnapshot[]) =>
+  services.map((service) => service.serviceNameSnapshot).filter(Boolean).join(', ') || 'Без услуги';
+
+const servicesEqual = (
+  previousServices: AppointmentEditServiceSnapshot[],
+  nextServices: AppointmentEditServiceSnapshot[],
+) => {
+  if (previousServices.length !== nextServices.length) {
+    return false;
+  }
+
+  return previousServices.every((previousService, index) => {
+    const nextService = nextServices[index];
+    return (
+      Boolean(nextService) &&
+      serviceIdentity(previousService) === serviceIdentity(nextService) &&
+      previousService.serviceNameSnapshot === nextService.serviceNameSnapshot
+    );
+  });
+};
+
+const buildAppointmentEditChangeLines = (
+  previous: AppointmentEditSnapshot,
+  appointment: NonNullable<AppointmentMailContext>,
+) => {
+  const nextServices = appointment.appointmentServices.map((service) => ({
+    serviceId: service.serviceId,
+    serviceNameSnapshot: service.serviceNameSnapshot,
+  }));
+  const lines: string[] = [];
+
+  if (!servicesEqual(previous.services, nextServices)) {
+    if (previous.services.length < nextServices.length) {
+      const previousKeys = new Set(previous.services.map(serviceIdentity));
+      const added = nextServices.filter((service) => !previousKeys.has(serviceIdentity(service)));
+      lines.push(`Добавлена услуга: ${serviceNames(added.length > 0 ? added : nextServices)}.`);
+    } else if (previous.services.length > nextServices.length) {
+      const nextKeys = new Set(nextServices.map(serviceIdentity));
+      const removed = previous.services.filter((service) => !nextKeys.has(serviceIdentity(service)));
+      lines.push(`Удалена услуга: ${serviceNames(removed.length > 0 ? removed : previous.services)}.`);
+    } else {
+      lines.push(`Изменена услуга: ${serviceNames(previous.services)} -> ${serviceNames(nextServices)}.`);
+    }
+  }
+
+  if (appointmentDateLabel(previous.startAt) !== appointmentDateLabel(appointment.startAt)) {
+    lines.push(
+      `Изменена дата записи: ${appointmentDateLabel(previous.startAt)} -> ${appointmentDateLabel(
+        appointment.startAt,
+      )}.`,
+    );
+  }
+
+  if (
+    appointmentTimeRangeLabel(previous.startAt, previous.endAt) !==
+    appointmentTimeRangeLabel(appointment.startAt, appointment.endAt)
+  ) {
+    lines.push(
+      `Изменено время записи: ${appointmentTimeRangeLabel(
+        previous.startAt,
+        previous.endAt,
+      )} -> ${appointmentTimeRangeLabel(appointment.startAt, appointment.endAt)}.`,
+    );
+  }
+
+  if (previous.staffId !== appointment.staff.id) {
+    lines.push(`Изменился мастер: ${previous.staffName} -> ${appointment.staff.name}.`);
+  }
+
+  if (previous.clientId !== appointment.client.id) {
+    lines.push(
+      `Изменился клиент: ${
+        previous.clientName || previous.clientPhoneE164
+      } -> ${clientDisplayName(appointment.client)}.`,
+    );
+  }
+
+  if ((previous.comment ?? '').trim() !== (appointment.comment ?? '').trim()) {
+    lines.push('Изменен комментарий к записи.');
+  }
+
+  return lines;
+};
+
+export const notifyOnAppointmentEdited = async (input: {
+  appointmentId: string;
+  previous: AppointmentEditSnapshot;
+}) => {
+  const appointment = await loadAppointmentMailContext(input.appointmentId);
+  if (!appointment) {
+    return;
+  }
+
+  const changeLines = buildAppointmentEditChangeLines(input.previous, appointment);
+  if (changeLines.length === 0) {
+    return;
+  }
+
+  const dispatchStamp = appointment.updatedAt.toISOString();
+  const previousClientChanged = input.previous.clientId !== appointment.client.id;
+
+  if (previousClientChanged) {
+    const previousClient = await prisma.client.findUnique({
+      where: { id: input.previous.clientId },
+      include: { account: { select: { email: true } } },
+    });
+
+    await sendNotificationEmail({
+      notificationId: 'clients.bookingCancelled',
+      dispatchKey: `clients.bookingCancelled:clientChanged:${appointment.id}:${dispatchStamp}`,
+      recipientEmail: previousClient?.account?.email,
+      subject: 'Запись отменена',
+      lines: [
+        `Здравствуйте${previousClient?.name ? `, ${previousClient.name}` : ''}!`,
+        `Запись на ${appointmentDateTimeLabel({
+          startAt: input.previous.startAt,
+          endAt: input.previous.endAt,
+        })} отменена, потому что в записи выбран другой клиент.`,
+      ],
+      meta: {
+        appointmentId: appointment.id,
+        previousClientId: input.previous.clientId,
+        nextClientId: appointment.client.id,
+      },
+    });
+  }
+
+  await sendNotificationEmail({
+    notificationId: 'clients.bookingChanged',
+    dispatchKey: `clients.bookingChanged:edited:${appointment.id}:${dispatchStamp}`,
+    recipientEmail: appointment.client.account?.email,
+    subject: 'Запись изменена',
+    lines: [
+      `Здравствуйте${appointment.client.name ? `, ${appointment.client.name}` : ''}!`,
+      `Запись на ${appointmentDateTimeLabel(appointment)} изменена.`,
+      ...changeLines.filter((line) => !line.startsWith('Изменился клиент:')),
+      `Специалист: ${appointment.staff.name}.`,
+    ],
+    meta: { appointmentId: appointment.id },
+  });
+
+  const relatedStaff = new Map<string, { id: string; email: string | null; name: string }>();
+  relatedStaff.set(input.previous.staffId, {
+    id: input.previous.staffId,
+    email: input.previous.staffEmail,
+    name: input.previous.staffName,
+  });
+  relatedStaff.set(appointment.staff.id, {
+    id: appointment.staff.id,
+    email: appointment.staff.email,
+    name: appointment.staff.name,
+  });
+
+  await Promise.all(
+    [...relatedStaff.values()].map((staff) =>
+      sendAssignedStaffNotificationEmail({
+        appointmentId: appointment.id,
+        staffId: staff.id,
+        fallbackEmail: staff.email,
+        notificationId: 'staff.bookingRescheduled',
+        dispatchKey: `staff.bookingEdited:${appointment.id}:${staff.id}:${dispatchStamp}`,
+        subject: 'Запись изменена',
+        lines: [
+          `Запись клиента ${clientDisplayName(appointment.client)} изменена.`,
+          ...changeLines,
+          `Текущая запись: ${appointmentDateTimeLabel(appointment)}.`,
+          `Услуги: ${formatServiceNames(appointment)}.`,
+        ],
+        meta: { appointmentId: appointment.id, audience: 'staff', staffId: staff.id },
+      }),
+    ),
+  );
+
+  await sendGlobalAppointmentNotification({
+    notificationId: 'staff.bookingRescheduled',
+    dispatchKeyPrefix: `staff.bookingEdited:broadcast:${appointment.id}:${dispatchStamp}`,
+    appointmentId: appointment.id,
+    excludeStaffIds: [...relatedStaff.keys()],
+    includeOwners: true,
+    subject: 'Запись изменена',
+    lines: [
+      `Запись клиента ${clientDisplayName(appointment.client)} изменена.`,
+      ...changeLines,
+      `Текущая запись: ${appointmentDateTimeLabel(appointment)}.`,
+      `Текущий мастер: ${appointment.staff.name}.`,
+      `Услуги: ${formatServiceNames(appointment)}.`,
+    ],
   });
 };
 

@@ -32,6 +32,7 @@ import { validatePromoForClient } from '../promocodes/service';
 import { getOrCreateAppConfig } from '../settings/service';
 import {
   notifyOnAppointmentCreated,
+  notifyOnAppointmentEdited,
   notifyOnAppointmentRescheduled,
   notifyOnAppointmentStatusChanged,
   notifyOnClientCancelled,
@@ -1088,6 +1089,21 @@ appointmentsRouter.patch(
     if (!appointment) {
       throw notFound('Appointment not found');
     }
+    const previousNotificationSnapshot = {
+      clientId: appointment.clientId,
+      clientName: appointment.client.name,
+      clientPhoneE164: appointment.client.phoneE164,
+      staffId: appointment.staffId,
+      staffName: appointment.staff.name,
+      staffEmail: appointment.staff.email,
+      startAt: appointment.startAt,
+      endAt: appointment.endAt,
+      comment: appointment.comment,
+      services: appointment.appointmentServices.map((service) => ({
+        serviceId: service.serviceId,
+        serviceNameSnapshot: service.serviceNameSnapshot,
+      })),
+    };
 
     const serviceIds =
       body.serviceIds ??
@@ -1256,14 +1272,10 @@ appointmentsRouter.patch(
       }
     })();
 
-    if (updated.startAt.getTime() !== appointment.startAt.getTime() || updated.staffId !== appointment.staffId) {
-      await notifyOnAppointmentRescheduled({
-        appointmentId: updated.id,
-        previousStartAt: appointment.startAt,
-        previousEndAt: appointment.endAt,
-        previousStaffName: appointment.staff.name,
-      });
-    }
+    await notifyOnAppointmentEdited({
+      appointmentId: updated.id,
+      previous: previousNotificationSnapshot,
+    });
     if (body.status && body.status !== appointment.status) {
       await notifyOnAppointmentStatusChanged({
         appointmentId: updated.id,
