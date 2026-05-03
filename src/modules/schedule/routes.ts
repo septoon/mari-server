@@ -5,12 +5,13 @@ import { z } from 'zod';
 import { prisma } from '../../db/prisma';
 import {
   authenticateRequired,
+  hasPermission,
   requireStaff,
   requireStaffRolesOrPermission,
 } from '../../middlewares/auth';
 import { validateBody, validateParams, validateQuery } from '../../middlewares/validate';
 import { asyncHandler } from '../../utils/async-handler';
-import { badRequest, notFound } from '../../utils/errors';
+import { badRequest, forbidden, notFound } from '../../utils/errors';
 import { ok } from '../../utils/response';
 import { MSK_TZ, parseDateOnlyToUtc } from '../../utils/time';
 import { SLOT_STEP_MINUTES } from './service';
@@ -195,6 +196,16 @@ const assertStaffExists = async (staffId: string) => {
   if (!staff) {
     throw notFound('Staff not found');
   }
+};
+
+const assertCanReadStaffSchedule = (req: Parameters<typeof hasPermission>[0], staffId: string) => {
+  if (req.auth?.staffRole === 'OWNER' || hasPermission(req, 'VIEW_ALL_SCHEDULE')) {
+    return;
+  }
+  if (hasPermission(req, 'VIEW_SCHEDULE') && req.auth?.subjectId === staffId) {
+    return;
+  }
+  throw forbidden('No permission to view this staff schedule');
 };
 
 const assertRangeValid = (startAt: Date, endAt: Date) => {
@@ -425,6 +436,7 @@ scheduleRouter.get(
     const { staffId } = req.params as z.infer<typeof staffParamSchema>;
     const query = req.validatedQuery as z.infer<typeof workingHoursRangeQuerySchema>;
     await assertStaffExists(staffId);
+    assertCanReadStaffSchedule(req, staffId);
 
     if (query.from && query.to) {
       return ok(res, {
@@ -463,6 +475,7 @@ scheduleRouter.get(
   asyncHandler(async (req, res) => {
     const { staffId, date } = req.params as z.infer<typeof staffDateParamSchema>;
     await assertStaffExists(staffId);
+    assertCanReadStaffSchedule(req, staffId);
 
     return ok(res, {
       staffId,
@@ -585,6 +598,7 @@ scheduleRouter.get(
     const { staffId } = req.params as z.infer<typeof staffParamSchema>;
     const { from, to } = req.validatedQuery as z.infer<typeof rangeQuerySchema>;
     await assertStaffExists(staffId);
+    assertCanReadStaffSchedule(req, staffId);
 
     const where = {
       staffId,
@@ -679,6 +693,7 @@ scheduleRouter.get(
     const { staffId } = req.params as z.infer<typeof staffParamSchema>;
     const { from, to } = req.validatedQuery as z.infer<typeof rangeQuerySchema>;
     await assertStaffExists(staffId);
+    assertCanReadStaffSchedule(req, staffId);
 
     const where = {
       staffId,

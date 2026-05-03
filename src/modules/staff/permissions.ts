@@ -45,7 +45,13 @@ export const STAFF_PERMISSION_CATALOG: StaffPermissionCatalogItem[] = [
   {
     code: 'VIEW_SCHEDULE',
     title: 'График: просмотр',
-    description: 'Просмотр расписания сотрудников',
+    description: 'Просмотр только своего расписания',
+    group: 'workspace',
+  },
+  {
+    code: 'VIEW_ALL_SCHEDULE',
+    title: 'График: общий',
+    description: 'Просмотр расписания всех сотрудников',
     group: 'workspace',
   },
   {
