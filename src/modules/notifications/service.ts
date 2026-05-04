@@ -247,6 +247,25 @@ const appointmentDateTimeLabel = (appointment: {
     'HH:mm',
   )} до ${formatDateMsk(appointment.endAt, 'HH:mm')}`;
 
+const appointmentDurationLabel = (appointment: {
+  startAt: Date;
+  endAt: Date;
+}) => {
+  const totalMinutes = Math.max(
+    1,
+    Math.round((appointment.endAt.getTime() - appointment.startAt.getTime()) / 60000),
+  );
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0 && minutes > 0) {
+    return `${hours} ч ${minutes} мин`;
+  }
+  if (hours > 0) {
+    return `${hours} ч`;
+  }
+  return `${minutes} мин`;
+};
+
 const loadAppointmentMailContext = async (appointmentId: string) => {
   return prisma.appointment.findUnique({
     where: { id: appointmentId },
@@ -855,6 +874,7 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
   const baseLines = [
     `Здравствуйте${appointment.client.name ? `, ${appointment.client.name}` : ''}!`,
     `Ваша запись оформлена на ${appointmentDateTimeLabel(appointment)}.`,
+    `Длительность: ${appointmentDurationLabel(appointment)}.`,
     `Услуги: ${formatServiceNames(appointment)}.`,
     `Специалист: ${appointment.staff.name}.`,
     ...buildAppointmentCommentLines(appointment),
@@ -881,6 +901,7 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
       lines: [
         `Здравствуйте${appointment.client.name ? `, ${appointment.client.name}` : ''}!`,
         `Мы зафиксировали номер ${appointment.client.phoneE164} для вашей онлайн-записи на ${appointmentDateTimeLabel(appointment)}.`,
+        `Длительность: ${appointmentDurationLabel(appointment)}.`,
       ],
       meta: { appointmentId: appointment.id },
     });
@@ -895,6 +916,7 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
           subject: 'Клиент создал новую запись',
           lines: [
             `Клиент ${appointment.client.name || appointment.client.phoneE164} создал запись на ${appointmentDateTimeLabel(appointment)}.`,
+            `Длительность: ${appointmentDurationLabel(appointment)}.`,
             `Специалист: ${appointment.staff.name}.`,
             `Услуги: ${formatServiceNames(appointment)}.`,
             ...buildAppointmentCommentLines(appointment),
@@ -913,6 +935,7 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
       subject: 'Клиент записался к вам',
       lines: [
         `Клиент ${appointment.client.name || appointment.client.phoneE164} записался к вам на ${appointmentDateTimeLabel(appointment)}.`,
+        `Длительность: ${appointmentDurationLabel(appointment)}.`,
         `Услуги: ${formatServiceNames(appointment)}.`,
         ...buildAppointmentCommentLines(appointment),
       ],
@@ -927,6 +950,7 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
       title: 'Клиент записался к вам',
       lines: [
         `Клиент ${appointment.client.name || appointment.client.phoneE164} записался к вам на ${appointmentDateTimeLabel(appointment)}.`,
+        `Длительность: ${appointmentDurationLabel(appointment)}.`,
         `Услуги: ${formatServiceNames(appointment)}.`,
       ],
     });
@@ -940,6 +964,7 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
       subject: `Новая запись к ${appointment.staff.name}`,
       lines: [
         `Клиент ${appointment.client.name || appointment.client.phoneE164} создал запись на ${appointmentDateTimeLabel(appointment)}.`,
+        `Длительность: ${appointmentDurationLabel(appointment)}.`,
         `Специалист: ${appointment.staff.name}.`,
         `Услуги: ${formatServiceNames(appointment)}.`,
         ...buildAppointmentCommentLines(appointment),
@@ -956,6 +981,7 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
       title: `Новая запись к ${appointment.staff.name}`,
       lines: [
         `Клиент ${appointment.client.name || appointment.client.phoneE164} создал запись на ${appointmentDateTimeLabel(appointment)}.`,
+        `Длительность: ${appointmentDurationLabel(appointment)}.`,
         `Специалист: ${appointment.staff.name}.`,
         `Услуги: ${formatServiceNames(appointment)}.`,
       ],
@@ -983,6 +1009,7 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
     lines: [
       `Здравствуйте${appointment.client.name ? `, ${appointment.client.name}` : ''}!`,
       `Для записи на ${appointmentDateTimeLabel(appointment)} требуется подтверждение.`,
+      `Длительность: ${appointmentDurationLabel(appointment)}.`,
       'Если запись актуальна, просто ответьте на это письмо или свяжитесь с салоном.',
     ],
     meta: { appointmentId: appointment.id },
@@ -998,6 +1025,7 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
         subject: 'Администратор создал запись',
         lines: [
           `Создана запись на ${appointmentDateTimeLabel(appointment)}.`,
+          `Длительность: ${appointmentDurationLabel(appointment)}.`,
           `Клиент: ${appointment.client.name || appointment.client.phoneE164}.`,
           `Специалист: ${appointment.staff.name}.`,
           ...buildAppointmentCommentLines(appointment),
@@ -1016,6 +1044,7 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
     subject: 'Администратор создал запись к вам',
     lines: [
       `Администратор создал запись на ${appointmentDateTimeLabel(appointment)}.`,
+      `Длительность: ${appointmentDurationLabel(appointment)}.`,
       `Клиент: ${appointment.client.name || appointment.client.phoneE164}.`,
       `Услуги: ${formatServiceNames(appointment)}.`,
       ...buildAppointmentCommentLines(appointment),
@@ -1031,6 +1060,7 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
     title: 'Администратор создал запись к вам',
     lines: [
       `Администратор создал запись на ${appointmentDateTimeLabel(appointment)}.`,
+      `Длительность: ${appointmentDurationLabel(appointment)}.`,
       `Клиент: ${appointment.client.name || appointment.client.phoneE164}.`,
       `Услуги: ${formatServiceNames(appointment)}.`,
     ],
@@ -1045,6 +1075,7 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
     subject: `Создана запись к ${appointment.staff.name}`,
     lines: [
       `Администратор создал запись на ${appointmentDateTimeLabel(appointment)}.`,
+      `Длительность: ${appointmentDurationLabel(appointment)}.`,
       `Клиент: ${appointment.client.name || appointment.client.phoneE164}.`,
       `Специалист: ${appointment.staff.name}.`,
       `Услуги: ${formatServiceNames(appointment)}.`,
@@ -1062,6 +1093,7 @@ export const notifyOnAppointmentCreated = async (appointmentId: string) => {
     title: `Создана запись к ${appointment.staff.name}`,
     lines: [
       `Администратор создал запись на ${appointmentDateTimeLabel(appointment)}.`,
+      `Длительность: ${appointmentDurationLabel(appointment)}.`,
       `Клиент: ${appointment.client.name || appointment.client.phoneE164}.`,
       `Специалист: ${appointment.staff.name}.`,
       `Услуги: ${formatServiceNames(appointment)}.`,

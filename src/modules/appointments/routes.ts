@@ -639,11 +639,13 @@ appointmentsRouter.post(
 
     const services = await getServicesSnapshot(serviceIds);
     const endAt =
-      services.length > 0
-        ? new Date(startAt.getTime() + getDurationSec(services) * 1000)
-        : body.endAt
-          ? new Date(body.endAt)
-          : null;
+      isStaffCreate && body.endAt
+        ? new Date(body.endAt)
+        : services.length > 0
+          ? new Date(startAt.getTime() + getDurationSec(services) * 1000)
+          : body.endAt
+            ? new Date(body.endAt)
+            : null;
     if (!endAt || Number.isNaN(endAt.getTime())) {
       throw badRequest('endAt is required when serviceIds is empty');
     }
