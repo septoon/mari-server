@@ -239,6 +239,17 @@ const offerItemSchema = z.object({
   imageAssetId: z.string().uuid().optional()
 });
 
+const galleryPhotoSchema = z.object({
+  id: z.string().trim().min(1).max(100),
+  imageAssetId: z.string().uuid(),
+  alt: z.string().trim().max(200).optional()
+});
+
+const gallerySchema = z.object({
+  exterior: z.array(galleryPhotoSchema).max(200).optional(),
+  interior: z.array(galleryPhotoSchema).max(200).optional()
+});
+
 const newsArticleSchema = z.object({
   slug: z.string().trim().min(1).max(120).regex(/^[a-z0-9-]+$/),
   title: z.string().trim().min(1).max(220),
@@ -301,6 +312,7 @@ const siteContentSchema = z
   .object({
     homePage: homePageSchema.optional(),
     pricesPage: pricesPageSchema.optional(),
+    gallery: gallerySchema.optional(),
     offers: z.array(offerItemSchema).max(200).optional(),
     news: z.array(newsArticleSchema).max(500).optional(),
     locations: z.array(locationProfileSchema).max(200).optional(),
@@ -369,6 +381,12 @@ export const validateClientFrontExtra = (extra: Record<string, unknown>) => {
     }
     if (parsed.data.locations) {
       assertUniqueBy(parsed.data.locations, 'slug', 'siteContent.locations');
+    }
+    if (parsed.data.gallery?.exterior) {
+      assertUniqueBy(parsed.data.gallery.exterior, 'id', 'siteContent.gallery.exterior');
+    }
+    if (parsed.data.gallery?.interior) {
+      assertUniqueBy(parsed.data.gallery.interior, 'id', 'siteContent.gallery.interior');
     }
     if (parsed.data.policy?.sections) {
       assertUniqueBy(parsed.data.policy.sections, 'id', 'siteContent.policy.sections');
