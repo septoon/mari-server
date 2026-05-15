@@ -43,6 +43,12 @@ export const STAFF_PERMISSION_CATALOG: StaffPermissionCatalogItem[] = [
     group: 'workspace',
   },
   {
+    code: 'EDIT_JOURNAL_FINAL_TOTAL',
+    title: 'Журнал: итоговая сумма',
+    description: 'Ручное изменение итоговой суммы при создании записи в журнале',
+    group: 'finance',
+  },
+  {
     code: 'VIEW_SCHEDULE',
     title: 'График: просмотр',
     description: 'Просмотр только своего расписания',

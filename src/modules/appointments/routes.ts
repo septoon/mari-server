@@ -92,6 +92,7 @@ const createAppointmentSchema = z.object({
   startAt: z.string().datetime(),
   endAt: z.string().datetime().optional(),
   comment: z.string().optional(),
+  finalTotalPrice: z.coerce.number().nonnegative().optional(),
   promoCode: z.string().min(1).optional(),
   discountOverride: z
     .object({
@@ -238,6 +239,36 @@ const resolveClientBaseDiscount = (client: {
   return {
     type: client.discountType,
     value: client.discountValue
+  };
+};
+
+const applyFinalTotalOverride = (
+  prices: ReturnType<typeof calculatePrices>,
+  services: Awaited<ReturnType<typeof getServicesSnapshot>>,
+  finalTotalRaw: number
+) => {
+  const finalTotal = D(finalTotalRaw).toDecimalPlaces(2);
+  const discountAmount = maxZero(prices.baseTotal.minus(finalTotal)).toDecimalPlaces(2);
+  let allocatedTotal = zero();
+  const serviceFinalPrices = services.map((service, index) => {
+    if (index === services.length - 1) {
+      return maxZero(finalTotal.minus(allocatedTotal)).toDecimalPlaces(2);
+    }
+
+    const allocated = prices.baseTotal.greaterThan(0)
+      ? service.price.mul(finalTotal).div(prices.baseTotal).toDecimalPlaces(2)
+      : finalTotal.div(Math.max(services.length, 1)).toDecimalPlaces(2);
+    allocatedTotal = allocatedTotal.plus(allocated);
+    return maxZero(allocated);
+  });
+
+  return {
+    ...prices,
+    discountTypeSnapshot: discountAmount.greaterThan(0) ? DiscountType.FIXED : DiscountType.NONE,
+    discountValueSnapshot: discountAmount.greaterThan(0) ? discountAmount : null,
+    discountAmount,
+    finalTotal,
+    serviceFinalPrices
   };
 };
 
@@ -736,7 +767,14 @@ appointmentsRouter.post(
           : undefined
     );
 
-    const prices = calculatePrices(services, discount);
+    const calculatedPrices = calculatePrices(services, discount);
+    if (body.finalTotalPrice !== undefined && !hasPermission(req, 'EDIT_JOURNAL_FINAL_TOTAL')) {
+      throw forbidden('finalTotalPrice allowed only for OWNER or staff with EDIT_JOURNAL_FINAL_TOTAL');
+    }
+    const prices =
+      body.finalTotalPrice !== undefined
+        ? applyFinalTotalOverride(calculatedPrices, services, body.finalTotalPrice)
+        : calculatedPrices;
     const appointmentComment = body.comment?.trim() || null;
     const appointment = await (async () => {
       try {
