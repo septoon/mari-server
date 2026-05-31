@@ -158,6 +158,7 @@ const updateAppointmentSchema = z
     serviceIds: z.array(z.string().uuid()).optional(),
     startAt: z.string().datetime().optional(),
     endAt: z.string().datetime().optional(),
+    finalTotalPrice: z.coerce.number().nonnegative().optional(),
     status: z.nativeEnum(AppointmentStatus).optional(),
     comment: z.union([z.string(), z.null()]).optional(),
     payment: z
@@ -175,6 +176,7 @@ const updateAppointmentSchema = z
       value.serviceIds !== undefined ||
       value.startAt !== undefined ||
       value.endAt !== undefined ||
+      value.finalTotalPrice !== undefined ||
       value.status !== undefined ||
       value.comment !== undefined ||
       value.payment !== undefined,
@@ -1116,6 +1118,9 @@ appointmentsRouter.patch(
   asyncHandler(async (req, res) => {
     const { id } = req.params as z.infer<typeof idParamSchema>;
     const body = req.body as z.infer<typeof updateAppointmentSchema>;
+    if (body.finalTotalPrice !== undefined && !hasPermission(req, 'EDIT_JOURNAL_FINAL_TOTAL')) {
+      throw forbidden('finalTotalPrice allowed only for OWNER or staff with EDIT_JOURNAL_FINAL_TOTAL');
+    }
 
     const appointment = await prisma.appointment.findUnique({
       where: { id },
@@ -1150,12 +1155,15 @@ appointmentsRouter.patch(
       appointment.appointmentServices
         .map((service) => service.serviceId)
         .filter((value): value is string => Boolean(value));
-    const services = body.serviceIds ? await getServicesSnapshot(body.serviceIds) : null;
+    const services =
+      body.serviceIds || body.finalTotalPrice !== undefined
+        ? await getServicesSnapshot(serviceIds)
+        : null;
     const startAt = body.startAt ? new Date(body.startAt) : appointment.startAt;
     const endAt = body.endAt
       ? new Date(body.endAt)
-      : services
-        ? new Date(startAt.getTime() + getDurationSec(services) * 1000)
+      : body.serviceIds
+        ? new Date(startAt.getTime() + getDurationSec(services ?? []) * 1000)
         : appointment.endAt;
 
     if (Number.isNaN(startAt.getTime()) || Number.isNaN(endAt.getTime())) {
@@ -1235,7 +1243,11 @@ appointmentsRouter.patch(
                 appointment.discountValueSnapshot,
                 undefined
               );
-              prices = calculatePrices(services, discount);
+              const calculatedPrices = calculatePrices(services, discount);
+              prices =
+                body.finalTotalPrice !== undefined
+                  ? applyFinalTotalOverride(calculatedPrices, services, body.finalTotalPrice)
+                  : calculatedPrices;
 
               await tx.appointmentService.deleteMany({ where: { appointmentId: appointment.id } });
               if (services.length > 0) {
